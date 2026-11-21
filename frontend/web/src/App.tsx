@@ -46,6 +46,11 @@ function downloadJson(name: string, data: unknown) {
   URL.revokeObjectURL(url);
 }
 
+function formatJsonKey(fieldPath: string): string {
+  const leaf = fieldPath.split(".").pop() ?? fieldPath;
+  return leaf.replace(/\[\d+\]$/, "");
+}
+
 function HighlightedPageText({ text, quote }: { text: string; quote: string | null }) {
   const markRef = useRef<HTMLElement | null>(null);
 
@@ -107,6 +112,7 @@ function QuotesWithPdfView({
 
   const activeEv: FieldEvidence | undefined = evidence[selectedIdx] ?? evidence[0];
   const activePage = activeEv?.page ?? 1;
+  const fullDocumentText = (pages.length > 0 ? pages : ["(Brak warstwy tekstowej PDF)"]).join("\n\n");
 
   useEffect(() => {
     const target = activeRectRef.current ?? activePageRef.current;
@@ -120,7 +126,7 @@ function QuotesWithPdfView({
       <div className="quotes-fields">
         <div className="quotes-pane-header">
           <span>Cytaty i odnośniki ({evidence.length})</span>
-          <span className="quotes-pane-hint">Kliknij pole, aby podświetlić w PDF</span>
+          <span className="quotes-pane-hint">Kliknij pole, aby podświetlić w dokumencie</span>
         </div>
         {evidence.length === 0 ? (
           <div className="empty">Brak wyekstrahowanych pól do zacytowania.</div>
@@ -128,7 +134,6 @@ function QuotesWithPdfView({
           <div className="evidence-list">
             {evidence.map((ev, i) => {
               const isSelected = i === selectedIdx;
-              const pageNum = ev.page ?? 1;
               return (
                 <div
                   key={i}
@@ -136,9 +141,9 @@ function QuotesWithPdfView({
                   onClick={() => setSelectedIdx(i)}
                 >
                   <div className="evidence-header">
-                    <span className="evidence-field">{ev.field}</span>
+                    <span className="evidence-field" title={ev.field}>"{formatJsonKey(ev.field)}"</span>
                     <span className={`ref-badge ${isSelected ? "active" : ""}`}>
-                      Strona {pageNum}
+                      {isSelected ? "Podświetlono" : "Pokaż"}
                     </span>
                   </div>
                   <div className="evidence-value">{String(ev.value)}</div>
@@ -157,9 +162,8 @@ function QuotesWithPdfView({
           <div className="viewer-active-info">
             {activeEv ? (
               <>
-                <span className="viewer-active-field">{activeEv.field}:</span>{" "}
+                <span className="viewer-active-field" title={activeEv.field}>"{formatJsonKey(activeEv.field)}":</span>{" "}
                 <strong className="viewer-active-val">{String(activeEv.value)}</strong>
-                <span className="pill">Strona {activePage} z {Math.max(pageImages.length, pages.length, 1)}</span>
               </>
             ) : (
               <span>Eksplorator PDF</span>
@@ -208,35 +212,28 @@ function QuotesWithPdfView({
 
         {activeEv?.quote && (
           <div className="viewer-quote-banner">
-            <span className="viewer-quote-label">Podświetlony fragment (s. {activePage}):</span>{" "}
+            <span className="viewer-quote-label">Podświetlony fragment:</span>{" "}
             <em>„{activeEv.quote}”</em>
           </div>
         )}
 
         {viewMode === "pdf" && pageImages.length > 0 ? (
           <div className="pdf-explorer-scroll">
-            {pageImages.map((imgSrc, pageIdx) => {
-              const pNum = pageIdx + 1;
-              const isTargetPage = pNum === activePage;
-              const pageEvidences = evidence
-                .map((ev, evIdx) => ({ ev, evIdx }))
-                .filter(({ ev }) => (ev.page ?? 1) === pNum && (ev.rects?.length ?? 0) > 0);
+            <div className="pdf-document-sheet" style={{ width: `${zoom}%` }}>
+              {pageImages.map((imgSrc, pageIdx) => {
+                const pNum = pageIdx + 1;
+                const isTargetPage = pNum === activePage;
+                const pageEvidences = evidence
+                  .map((ev, evIdx) => ({ ev, evIdx }))
+                  .filter(({ ev }) => (ev.page ?? 1) === pNum && (ev.rects?.length ?? 0) > 0);
 
-              return (
-                <div
-                  key={pNum}
-                  ref={isTargetPage ? activePageRef : null}
-                  className={`pdf-canvas-card ${isTargetPage ? "target-page" : ""}`}
-                  style={{ width: `${zoom}%` }}
-                >
-                  <div className="pdf-canvas-header">
-                    <span>Strona {pNum}</span>
-                    {isTargetPage && activeEv && (
-                      <span className="pdf-canvas-active-tag">{activeEv.field}</span>
-                    )}
-                  </div>
-                  <div className="pdf-canvas-stage">
-                    <img src={imgSrc} alt={`Strona ${pNum}`} className="pdf-page-img" />
+                return (
+                  <div
+                    key={pNum}
+                    ref={isTargetPage ? activePageRef : null}
+                    className="pdf-canvas-stage"
+                  >
+                    <img src={imgSrc} alt="Dokument PDF" className="pdf-page-img" />
                     {pageEvidences.map(({ ev, evIdx }) => {
                       const isActive = evIdx === selectedIdx;
                       return (ev.rects ?? []).map((rect, rIdx) => (
@@ -250,33 +247,24 @@ function QuotesWithPdfView({
                             width: `${rect.w}%`,
                             height: `${rect.h}%`,
                           }}
-                          title={`${ev.field}: ${String(ev.value)}`}
+                          title={`"${formatJsonKey(ev.field)}": ${String(ev.value)}`}
                           onClick={() => setSelectedIdx(evIdx)}
                         />
                       ));
                     })}
                   </div>
-                </div>
-              );
-            })}
+                );
+              })}
+            </div>
           </div>
         ) : (
           <div className="pdf-text-pages">
-            {(pages.length > 0 ? pages : ["(Brak warstwy tekstowej PDF)"]).map((pageText, idx) => {
-              const pNum = idx + 1;
-              const isTargetPage = pNum === activePage;
-              return (
-                <div key={pNum} className={`pdf-page-box ${isTargetPage ? "target-page" : ""}`}>
-                  <div className="pdf-page-bar">
-                    <span>Strona {pNum}</span>
-                  </div>
-                  <HighlightedPageText
-                    text={pageText}
-                    quote={isTargetPage ? (activeEv?.quote ?? null) : null}
-                  />
-                </div>
-              );
-            })}
+            <div className="pdf-page-box target-page">
+              <HighlightedPageText
+                text={fullDocumentText}
+                quote={activeEv?.quote ?? null}
+              />
+            </div>
           </div>
         )}
       </div>
