@@ -68,3 +68,23 @@ Testy:
 ```bash
 pytest
 ```
+
+## Klasyfikacja dokumentów
+
+Klasyfikator korzysta z reprezentacji TF‑IDF (jedno- i dwuwyrazowe cechy) oraz
+LinearSVC. Dokumenty o zbyt małej pewności są klasyfikowane jako `inny`.
+
+Po instalacji projektu wytrenuj model na katalogu `dane/`:
+
+```bash
+python scripts/classify_documents.py --train
+```
+
+Następnie klasyfikuj tekst, JSON, PDF lub cały katalog:
+
+```bash
+python scripts/classify_documents.py --text "Odwołanie do Krajowej Izby Odwoławczej"
+python scripts/classify_documents.py dane/przyklad_01/odwolanie.json
+python scripts/classify_documents.py dane/przyklad_01
+python scripts/classify_documents.py "plik.pdf" --output wynik.json
+```
