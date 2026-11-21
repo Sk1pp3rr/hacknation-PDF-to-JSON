@@ -849,3 +849,159 @@ def test_bielik_refinements_empty_zamawiajacy_placeholders_and_second_rep() -> N
     assert norm_with_placeholder["ZamowieniePubliczne"]["numer_ted"] is None
 
 
+def test_a1_deterministic_id_binding_across_all_60_cases() -> None:
+    dane_dir = Path("dane")
+    if not dane_dir.exists():
+        pytest.skip("dane/ directory not available")
+
+    for pdf_path in sorted(dane_dir.glob("przyklad_*/odwolanie.pdf")):
+        expected = json.loads(pdf_path.with_suffix(".json").read_text(encoding="utf-8"))
+        text = extract_text_from_pdf_file(pdf_path)
+        minimal_llm = {
+            "OdwolanieKIO": {
+                "czynnosc_dzien": expected["OdwolanieKIO"]["czynnosc_dzien"],
+                "czynnosc_powod_id": expected["OdwolanieKIO"]["czynnosc_powod_id"],
+            },
+            "Odwolujacy": [
+                {
+                    "nazwa": o["nazwa"],
+                    "przez-pelnomocnika": o["przez-pelnomocnika"],
+                    "pelnomocnik": (
+                        {
+                            "imie_nazwisko": o["pelnomocnik"]["imie_nazwisko"],
+                            "nazwa": o["pelnomocnik"]["nazwa"],
+                        }
+                        if o.get("pelnomocnik")
+                        else None
+                    ),
+                }
+                for o in expected["Odwolujacy"]
+            ],
+            "Zamawiajacy": [
+                {
+                    "nazwa": z["nazwa"],
+                    "prowadzacy_postepowanie": z["prowadzacy_postepowanie"],
+                }
+                for z in expected["Zamawiajacy"]
+            ],
+            "ZamowieniePubliczne": {
+                "numer_postepowania": expected["ZamowieniePubliczne"]["numer_postepowania"],
+                "tytul": expected["ZamowieniePubliczne"]["tytul"],
+            },
+        }
+        aug = normalize_payload(
+            DocumentType.ODWOLANIE,
+            augment_post_extraction(DocumentType.ODWOLANIE, minimal_llm, text),
+        )
+        assert aug == expected, f"A1 odwolanie mismatch in {pdf_path}"
+
+    for pdf_path in sorted(dane_dir.glob("przyklad_*/pelnomocnictwo.pdf")):
+        expected = json.loads(pdf_path.with_suffix(".json").read_text(encoding="utf-8"))
+        text = extract_text_from_pdf_file(pdf_path)
+        minimal_llm = {
+            "mocodawca": [
+                {
+                    "data": {
+                        "imie_nazwisko": m["data"]["imie_nazwisko"],
+                        "nazwa": m["data"]["nazwa"],
+                        "typ": m["data"]["typ"],
+                    },
+                    "podpisujacy": m["podpisujacy"],
+                }
+                for m in expected["mocodawca"]
+            ],
+            "pelnomocnicy": [{"imie_nazwisko": p["imie_nazwisko"]} for p in expected["pelnomocnicy"]],
+        }
+        aug = normalize_payload(
+            DocumentType.PELNOMOCNICTWO,
+            augment_post_extraction(DocumentType.PELNOMOCNICTWO, minimal_llm, text),
+        )
+        assert aug == expected, f"A1 pelnomocnictwo mismatch in {pdf_path}"
+
+    for pdf_path in sorted(dane_dir.glob("przyklad_*/*przelew*.pdf")):
+        ref_path = pdf_path.parent / "przelew.json"
+        if not ref_path.is_file():
+            ref_path = pdf_path.with_suffix(".json")
+        expected = json.loads(ref_path.read_text(encoding="utf-8"))
+        text = extract_text_from_pdf_file(pdf_path)
+        pb = expected["przelew_bankowy"]
+        minimal_llm = {
+            "przelew_bankowy": {
+                "data_operacji": pb["data_operacji"],
+                "kwota": pb["kwota"],
+                "numer_transakcji": pb["numer_transakcji"],
+                "tytul": pb["tytul"],
+            }
+        }
+        aug = normalize_payload(
+            DocumentType.PRZELEW,
+            augment_post_extraction(DocumentType.PRZELEW, minimal_llm, text),
+        )
+        assert aug == expected, f"A1 przelew mismatch in {pdf_path}"
+
+
+def test_field_evidence_quotes_and_parallel_batch() -> None:
+    from backend.services.extractor import extract_documents_batch
+    from backend.services.normalizer import locate_field_evidence
+
+    pages = [
+        "Warszawa, dnia 16 czerwca 2025 r.\nOdwołujący: Belmoria S.A., NIP: 999-928-40-65\nZamawiający: Aurelink S.A., NIP: 9997518659",
+        "Zarzut nr 1: Zamawiający w dniu 10 czerwca 2025 roku unieważnił postępowanie.",
+    ]
+    full_text = "\n\n".join(pages)
+    sample_data = {
+        "OdwolanieKIO": {
+            "data": "2025-06-16",
+            "czynnosc_dzien": "2025-06-10",
+            "czynnosc_powod_id": 9,
+            "czynnosc_opis": "Decyzja o unieważnieniu postępowania",
+            "miejscowosc": "Warszawa",
+        },
+        "Odwolujacy": [{"nazwa": "Belmoria S.A.", "nip": "9999284065", "krs": None, "regon": None, "przez-pelnomocnika": 0, "pelnomocnik": None}],
+        "Zamawiajacy": [{"nazwa": "Aurelink S.A.", "nip": "9997518659", "krs": None, "regon": None, "prowadzacy_postepowanie": None}],
+        "ZamowieniePubliczne": {"numer_bzp": None, "numer_postepowania": None, "numer_ted": None, "tytul": None},
+    }
+    ev_list = locate_field_evidence(sample_data, full_text, pages=pages)
+    by_field = {ev.field: ev for ev in ev_list}
+    assert by_field["Odwolujacy[0].nip"].page == 1
+    assert "999-928-40-65" in (by_field["Odwolujacy[0].nip"].quote or "")
+    assert by_field["OdwolanieKIO.czynnosc_dzien"].page == 2
+    assert "10 czerwca 2025" in (by_field["OdwolanieKIO.czynnosc_dzien"].quote or "")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = {
+            "przelew_bankowy": {
+                "data_operacji": "2026-03-21",
+                "kwota": 200.0,
+                "numer_transakcji": "CEN123",
+                "tytul": "opłata",
+            }
+        }
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": json.dumps(payload)}}], "usage": {"prompt_tokens": 30, "completion_tokens": 15}},
+        )
+
+    client = LLMClient(api_key="test-key", transport=httpx.MockTransport(handler))
+    przelew_txt = "Kwota: 200,00 PLN\nData: 2026-03-21\nNr: CEN123\nTytuł: opłata\nZ: PL05470680287581539721455024\nNa: PL68438223049992295262834736"
+    outcomes = asyncio.run(
+        extract_documents_batch(
+            [
+                (DocumentType.PRZELEW, przelew_txt, [przelew_txt]),
+                (DocumentType.PRZELEW, przelew_txt, [przelew_txt]),
+                (DocumentType.INNY, "niezwiązany dokument", ["niezwiązany dokument"]),
+            ],
+            client=client,
+            max_concurrency=2,
+        )
+    )
+    assert len(outcomes) == 3
+    assert outcomes[0].valid is True
+    assert outcomes[0].evidence
+    assert "evidence" not in outcomes[0].data
+    assert PrzelewSchema.model_validate(outcomes[0].data).przelew_bankowy.z_rachunku == "05470680287581539721455024"
+    assert outcomes[2].mode == "skipped"
+
+
+
+

@@ -18,19 +18,22 @@ klasyfikacja:
 
 ekstrakcja:
   schema_name: "PelnomocnictwoSchema"
-  max_tokens: 500
+  max_tokens: 300
   max_chars: 6000
-  exclude_llm_fields: []
+  exclude_llm_fields:
+    - "krs"
+    - "nip"
+    - "pesel"
   force_string_fields:
     - "pesel"
   system_prompt: |
     Ekstrahujesz dane z polskiego pełnomocnictwa do ścisłego JSON.
   wskazowki:
     - "Zwracaj null jeśli brak pola (nie zgaduj)."
+    - "mocodawca[].data.nazwa to pełna nazwa firmy/podmiotu mocodawcy (np. 'Belmoria Rozwiązania S.A.'), nigdy numer KRS ani NIP."
     - "mocodawca[].data.typ to 'osoba_prawna' lub 'osoba_fizyczna'; dla osoby prawnej imie_nazwisko=null."
-    - "podpisujacy to lista osób podpisujących w imieniu mocodawcy."
+    - "podpisujacy to wyłącznie osoby podpisujące w imieniu Mocodawcy (np. Prezes Zarządu, Prokurent, Wspólnik) — NIGDY nie wpisuj tam pełnomocników z sekcji 'Pełnomocnictwo przyjmuję'."
     - "pelnomocnicy[].imie_nazwisko podawaj w mianowniku, bez tytułów zawodowych."
-    - "pesel to WYŁĄCZNIE 11-cyfrowy numer PESEL (nigdy numer wpisu na listę radców/adwokatów — wtedy zwróć null)."
 
 normalizacja:
   wymagane_pola:

@@ -1,9 +1,11 @@
 """Normalization, checksum validation, and zero-token augmentation services."""
 
 from backend.services.normalizer.augmenter import (
+    FieldEvidence,
     annotate_odwolanie_header,
     augment_post_extraction,
     extract_header_city_and_date,
+    locate_field_evidence,
     strip_kio_addressee,
     strip_person_titles,
 )
@@ -22,6 +24,7 @@ from backend.services.normalizer.validator import (
 )
 
 __all__ = [
+    "FieldEvidence",
     "IdentifierHints",
     "ValidationOutcome",
     "annotate_odwolanie_header",
@@ -33,6 +36,7 @@ __all__ = [
     "is_valid_nrb",
     "is_valid_pesel",
     "is_valid_regon",
+    "locate_field_evidence",
     "normalize_date_str",
     "normalize_payload",
     "strip_kio_addressee",

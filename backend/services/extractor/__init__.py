@@ -4,6 +4,7 @@ from backend.services.extractor.llm_client import ChatCompletionResult, LLMClien
 from backend.services.extractor.llm_extractor import (
     DocumentExtractionOutcome,
     extract_document,
+    extract_documents_batch,
     extract_structured_data,
     split_odwolanie_sections,
 )
@@ -15,6 +16,7 @@ __all__ = [
     "LLMClientError",
     "TokenUsage",
     "extract_document",
+    "extract_documents_batch",
     "extract_structured_data",
     "split_odwolanie_sections",
 ]
