@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+
+# Environments
+.venv/
+venv/
+.env
+
+# IDE
+.vscode/
+.idea/
+
+# Data / temporary PDFs
+data/
+*.pdf
+!tests/fixtures/*.pdf
