@@ -17,7 +17,19 @@ from backend.config import settings  # noqa: E402
 from backend.services.classifier import classify_document  # noqa: E402
 from backend.services.extractor import LLMClient, extract_document  # noqa: E402
 from backend.services.normalizer import extract_identifier_hints  # noqa: E402
-from backend.services.parser import extract_text_from_pdf_file  # noqa: E402
+from pypdf import PdfReader  # noqa: E402
+import io  # noqa: E402
+
+
+def _read_pdf_pages(pdf_path: Path) -> tuple[str, list[str]]:
+    import backend.services.parser as parser_mod
+
+    if hasattr(parser_mod, "parse_pdf"):
+        parsed = parser_mod.parse_pdf(pdf_path.read_bytes())
+        return parsed.text, parsed.pages
+    reader = PdfReader(io.BytesIO(pdf_path.read_bytes()))
+    pages = [(page.extract_text() or "").strip() for page in reader.pages]
+    return "\n\n".join(p for p in pages if p), pages
 
 
 def _flatten_leaves(obj: Any, prefix: str = "") -> dict[str, Any]:
@@ -86,12 +98,12 @@ def main() -> int:
         print(f"Błąd: nie znaleziono pliku PDF: {pdf_path}")
         return 1
 
-    text = extract_text_from_pdf_file(pdf_path)
+    text, pages = _read_pdf_pages(pdf_path)
     doc_type, confidence = classify_document(text)
     hints = extract_identifier_hints(text)
 
     print(f"Plik: {pdf_path}")
-    print(f"Długość tekstu: {len(text)} znaków")
+    print(f"Długość tekstu: {len(text)} znaków (strony: {len(pages)})")
     print(f"Klasa dokumentu: {doc_type.value} (pewność: {confidence:.4f})")
     print("Podpowiedzi regex:")
     print(hints.format_compact() or "  (brak)")
@@ -110,7 +122,7 @@ def main() -> int:
     active_model = args.model or settings.llm_model
     client = LLMClient(model=args.model) if args.model else None
     t0 = time.perf_counter()
-    outcome = asyncio.run(extract_document(doc_type, text, client=client, mode=args.mode))
+    outcome = asyncio.run(extract_document(doc_type, text, client=client, mode=args.mode, pages=pages))
     elapsed = time.perf_counter() - t0
     print(f"\nModel: {active_model} | Tryb: {outcome.mode} | Czas: {elapsed:.1f}s | valid={outcome.valid} | próby={outcome.attempts}")
     print(
@@ -125,6 +137,12 @@ def main() -> int:
         print("Ostrzeżenia walidacji:")
         for warn in outcome.validation_warnings:
             print(f"  - {warn}")
+    if outcome.evidence:
+        print("Cytaty źródłowe (strona + fragment):")
+        for ev in outcome.evidence:
+            pg = f"s. {ev.page}" if ev.page is not None else "s. ?"
+            qt = f'"{ev.quote}"' if ev.quote else "(brak cytatu)"
+            print(f"  - {ev.field} = {ev.value!r} [{pg}]: {qt}")
 
     print("\nWygenerowany JSON:")
     print(json.dumps(outcome.data, ensure_ascii=False, indent=2))

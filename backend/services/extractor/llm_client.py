@@ -40,6 +40,24 @@ class ChatCompletionResult(BaseModel):
     used_schema_fallback: bool = False
 
 
+_SHARED_CLIENTS: dict[int, httpx.AsyncClient] = {}
+_SHARED_SEMAPHORES: dict[int, asyncio.Semaphore] = {}
+
+
+def _get_shared_http_client(timeout_seconds: float) -> tuple[httpx.AsyncClient, asyncio.Semaphore]:
+    loop_id = id(asyncio.get_running_loop())
+    client = _SHARED_CLIENTS.get(loop_id)
+    if client is None or client.is_closed:
+        limits = httpx.Limits(max_connections=32, max_keepalive_connections=16)
+        client = httpx.AsyncClient(timeout=timeout_seconds, limits=limits)
+        _SHARED_CLIENTS[loop_id] = client
+    sem = _SHARED_SEMAPHORES.get(loop_id)
+    if sem is None:
+        sem = asyncio.Semaphore(max(1, int(getattr(settings, "llm_max_concurrency", 8))))
+        _SHARED_SEMAPHORES[loop_id] = sem
+    return client, sem
+
+
 class LLMClient:
     """Thin async client for OpenAI-compatible EU endpoints (Mistral, Scaleway, OVHcloud, Ollama)."""
 
@@ -93,13 +111,23 @@ class LLMClient:
         used_fallback = False
         start = time.perf_counter()
 
-        async with httpx.AsyncClient(timeout=self.timeout_seconds, transport=self._transport) as client:
-            resp = await self._post_with_retry(client, payload)
-
-            if resp.status_code in (400, 422) and self.use_strict_schema:
-                payload = {**payload, "response_format": {"type": "json_object"}}
-                used_fallback = True
+        if self._transport is not None:
+            async with httpx.AsyncClient(timeout=self.timeout_seconds, transport=self._transport) as client:
                 resp = await self._post_with_retry(client, payload)
+
+                if resp.status_code in (400, 422) and self.use_strict_schema:
+                    payload = {**payload, "response_format": {"type": "json_object"}}
+                    used_fallback = True
+                    resp = await self._post_with_retry(client, payload)
+        else:
+            client, sem = _get_shared_http_client(self.timeout_seconds)
+            async with sem:
+                resp = await self._post_with_retry(client, payload)
+
+                if resp.status_code in (400, 422) and self.use_strict_schema:
+                    payload = {**payload, "response_format": {"type": "json_object"}}
+                    used_fallback = True
+                    resp = await self._post_with_retry(client, payload)
 
         if resp.status_code >= 400:
             raise LLMClientError(f"LLM API error {resp.status_code}: {resp.text[:300]}")

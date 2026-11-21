@@ -1,6 +1,7 @@
 """Config-driven EU LLM extraction engine with strict schemas, validation, and surgical retry."""
 
 import asyncio
+from collections.abc import Sequence
 from copy import deepcopy
 import json
 import re
@@ -26,10 +27,12 @@ from backend.schemas.uzp import (
 from backend.services.extractor.llm_client import LLMClient, TokenUsage
 from backend.services.extractor.schema_utils import to_strict_json_schema
 from backend.services.normalizer import (
+    FieldEvidence,
     ValidationOutcome,
     annotate_odwolanie_header,
     augment_post_extraction,
     extract_identifier_hints,
+    locate_field_evidence,
     validate_extraction,
 )
 
@@ -53,11 +56,12 @@ class _OdwolanieActionPayload(BaseModel):
 
 
 class DocumentExtractionOutcome(BaseModel):
-    """Full extraction result including validation status and token telemetry."""
+    """Full extraction result including validation status, source citations, and token telemetry."""
 
     doc_type: DocumentType | str
     valid: bool
     data: dict[str, Any] = Field(default_factory=dict)
+    evidence: list[FieldEvidence] = Field(default_factory=list)
     usage: TokenUsage = Field(default_factory=TokenUsage)
     attempts: int = 0
     validation_errors: list[str] = Field(default_factory=list)
@@ -72,7 +76,7 @@ def _render_template(template: str, variables: dict[str, str]) -> str:
     return rendered
 
 
-def _resolve_strict_schema(cfg: DocumentConfig) -> dict[str, Any] | None:
+def _resolve_strict_schema(cfg: DocumentConfig, *, include_excluded: bool = False) -> dict[str, Any] | None:
     schema_cls = _SCHEMA_BY_NAME.get(cfg.ekstrakcja.schema_name)
     if schema_cls is None:
         try:
@@ -81,9 +85,14 @@ def _resolve_strict_schema(cfg: DocumentConfig) -> dict[str, Any] | None:
             schema_cls = None
 
     if schema_cls is not None:
+        excluded = (
+            {"czynnosc_opis"} & set(cfg.ekstrakcja.exclude_llm_fields)
+            if include_excluded
+            else set(cfg.ekstrakcja.exclude_llm_fields)
+        )
         return to_strict_json_schema(
             schema_cls,
-            exclude_fields=set(cfg.ekstrakcja.exclude_llm_fields),
+            exclude_fields=excluded,
             force_string_fields=set(cfg.ekstrakcja.force_string_fields),
         )
     if cfg.ekstrakcja.json_schema is not None:
@@ -104,11 +113,21 @@ def split_odwolanie_sections(text: str) -> tuple[str, str]:
     """Deterministically slice an appeal into (header_text, first_claim_text) to shrink 3B prompts."""
     cleaned = _clean_text(text, max_chars=12000)
 
-    header_end_match = re.search(
-        r"(?im)^(?:\s*Zarzut\s+nr\s*1\b|\s*Wskazanie\s+narusze[ńn]\b|\s*Wnosz[ęe]\s+o\b|\s*UZASADNIENIE\b)",
-        cleaned,
-    )
-    header_slice = cleaned[: header_end_match.start()].strip() if header_end_match else cleaned[:3500]
+    dzialajac_match = re.search(r"(?im)^\s*Dzia[łl]aj[ąa]c\s+w\s+imieniu\b", cleaned)
+    if (
+        dzialajac_match
+        and dzialajac_match.start() >= 200
+        and re.search(r"(?i)\b(?:dotyczy|post[ęe]powani)", cleaned[: dzialajac_match.start()])
+    ):
+        header_end_pos: int | None = dzialajac_match.start()
+    else:
+        header_end_match = re.search(
+            r"(?im)^(?:\s*Zarzut\s+nr\s*1\b|\s*Wskazanie\s+narusze[ńn]\b|\s*Wnosz[ęe]\s+o\b|\s*UZASADNIENIE\b)",
+            cleaned,
+        )
+        header_end_pos = header_end_match.start() if header_end_match else None
+
+    header_slice = cleaned[:header_end_pos].strip() if header_end_pos is not None else cleaned[:3500]
     if len(header_slice) < 100:
         header_slice = cleaned[:3500]
 
@@ -143,10 +162,35 @@ def _parse_json_content(content: str) -> tuple[dict[str, Any], list[str]]:
     return parsed, []
 
 
-def _build_user_message(text: str, *, include_hints: bool) -> str:
+def _build_user_message(
+    text: str,
+    *,
+    include_hints: bool,
+    exclude_fields: set[str] | None = None,
+    doc_id: str = "",
+) -> str:
     if not include_hints:
         return f"TEKST DOKUMENTU:\n{text}"
     hints = extract_identifier_hints(text)
+    excluded = exclude_fields or set()
+    if "nip" in excluded:
+        hints.nip = []
+    if "krs" in excluded:
+        hints.krs = []
+    if "regon" in excluded or doc_id in {"pelnomocnictwo", "przelew"}:
+        hints.regon = []
+    if "pesel" in excluded:
+        hints.pesel = []
+    if "z_rachunku" in excluded and "na_rachunek" in excluded:
+        hints.nrb = []
+    if "numer_bzp" in excluded:
+        hints.bzp = []
+    if "numer_ted" in excluded:
+        hints.ted = []
+    if "mail" in excluded:
+        hints.emails = []
+    if doc_id == "pelnomocnictwo":
+        hints.dates = []
     if hints.is_empty():
         return f"TEKST DOKUMENTU:\n{text}"
     return f"WYKRYTE KANDYDATY REGEX (użyj do weryfikacji):\n{hints.format_compact()}\n\nTEKST DOKUMENTU:\n{text}"
@@ -356,10 +400,19 @@ async def _run_single_shot(
     client: LLMClient,
     *,
     include_hints: bool,
+    exclude_fields: set[str] | None = None,
 ) -> tuple[dict[str, Any], list[str], TokenUsage, int]:
     messages = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": _build_user_message(pruned_text, include_hints=include_hints)},
+        {
+            "role": "user",
+            "content": _build_user_message(
+                pruned_text,
+                include_hints=include_hints,
+                exclude_fields=exclude_fields,
+                doc_id=doc_id,
+            ),
+        },
     ]
     res = await client.complete_json(
         messages=messages,
@@ -382,8 +435,18 @@ async def _run_odwolanie_section_swarm(
     assert swarm_cfg is not None
 
     header_slice, action_slice = split_odwolanie_sections(pruned_text)
-    header_schema = to_strict_json_schema(_OdwolanieHeaderPayload)
-    action_schema = to_strict_json_schema(_OdwolanieActionPayload)
+    excluded = set(cfg.ekstrakcja.exclude_llm_fields)
+    forced_str = set(cfg.ekstrakcja.force_string_fields)
+    header_schema = to_strict_json_schema(
+        _OdwolanieHeaderPayload,
+        exclude_fields=excluded,
+        force_string_fields=forced_str,
+    )
+    action_schema = to_strict_json_schema(
+        _OdwolanieActionPayload,
+        exclude_fields=excluded,
+        force_string_fields=forced_str,
+    )
 
     header_system_prompt = _render_template(swarm_cfg.header_system_prompt, _PROMPT_VARIABLES)
     action_system_prompt = _render_template(swarm_cfg.action_system_prompt, _PROMPT_VARIABLES)
@@ -459,6 +522,7 @@ async def extract_document(
     max_retries: int | None = None,
     include_hints: bool = True,
     config: DocumentConfig | None = None,
+    pages: list[str] | None = None,
 ) -> DocumentExtractionOutcome:
     """Extract canonical JSON for one classified document using YAML configuration."""
     if str(doc_type) == DocumentType.INNY.value or not text.strip():
@@ -525,6 +589,7 @@ async def extract_document(
             strict_schema,
             active_client,
             include_hints=include_hints,
+            exclude_fields=set(cfg.ekstrakcja.exclude_llm_fields),
         )
 
     if parse_errors:
@@ -542,11 +607,14 @@ async def extract_document(
         is_valid = validation.valid
 
     repair_prompts: RepairPromptsConfig | None = None
+    repair_schema: dict[str, Any] | None = None
     for _ in range(max(0, retries_allowed)):
         if is_valid:
             break
         if repair_prompts is None:
             repair_prompts = get_repair_prompts()
+        if repair_schema is None:
+            repair_schema = _resolve_strict_schema(cfg, include_excluded=True) or strict_schema
 
         patch_plan = (
             None
@@ -554,7 +622,7 @@ async def extract_document(
             else _build_surgical_patch_plan(
                 doc_type,
                 repair_prompts,
-                strict_schema,
+                repair_schema,
                 outcome_data,
                 failed_fields,
                 pruned_text,
@@ -630,12 +698,39 @@ async def extract_document(
         doc_type=doc_type,
         valid=is_valid,
         data=outcome_data,
+        evidence=locate_field_evidence(outcome_data, pruned_text, pages=pages),
         usage=total_usage,
         attempts=attempts,
         validation_errors=errors,
         validation_warnings=warnings,
         mode=active_mode,
     )
+
+
+async def extract_documents_batch(
+    items: Sequence[tuple[DocumentType | str, str] | tuple[DocumentType | str, str, list[str] | None]],
+    *,
+    client: LLMClient | None = None,
+    mode: Literal["single", "section_swarm"] | None = None,
+    max_concurrency: int | None = None,
+) -> list[DocumentExtractionOutcome]:
+    """Process multiple classified documents concurrently with a bounded semaphore."""
+    default_conc = int(getattr(settings, "llm_max_concurrency", 8))
+    limit = max(1, max_concurrency or default_conc)
+    sem = asyncio.Semaphore(limit)
+
+    async def _run_one(
+        item: tuple[DocumentType | str, str] | tuple[DocumentType | str, str, list[str] | None],
+    ) -> DocumentExtractionOutcome:
+        if len(item) == 3:
+            doc_type, text, pages = item
+        else:
+            doc_type, text = item
+            pages = None
+        async with sem:
+            return await extract_document(doc_type, text, client=client, mode=mode, pages=pages)
+
+    return list(await asyncio.gather(*(_run_one(it) for it in items)))
 
 
 async def extract_structured_data(
