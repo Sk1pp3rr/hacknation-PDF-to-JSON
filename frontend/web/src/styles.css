@@ -78,10 +78,10 @@ h1 { font-size: 16px; margin: 0; font-weight: 600; }
 .icon-btn:hover { background: var(--bg-soft); }
 
 /* Layout */
-.main { flex: 1; display: grid; grid-template-columns: 320px 1fr; min-height: 0; }
-.sidebar { border-right: 1px solid var(--border); padding: 20px; overflow-y: auto; background: var(--bg-soft); }
-.content { padding: 24px 32px; overflow-y: auto; min-width: 0; }
-.content-title { font-size: 15px; font-weight: 600; margin: 0 0 16px; word-break: break-all; }
+.main { flex: 1; display: grid; grid-template-columns: 260px 1fr; min-height: 0; }
+.sidebar { border-right: 1px solid var(--border); padding: 16px; overflow-y: auto; background: var(--bg-soft); }
+.content { padding: 18px 24px; overflow-y: auto; min-width: 0; }
+.content-title { font-size: 15px; font-weight: 600; margin: 0 0 12px; word-break: break-all; }
 
 /* Dropzone */
 .dropzone {
@@ -164,24 +164,141 @@ h1 { font-size: 16px; margin: 0; font-weight: 600; }
 }
 
 .evidence-list {
-  display: flex; flex-direction: column; gap: 10px; max-height: calc(100vh - 360px); overflow-y: auto;
+  display: flex; flex-direction: column; gap: 10px; overflow-y: auto; padding-right: 4px;
 }
 .evidence-card {
-  border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; background: var(--surface);
+  border: 1px solid var(--border); border-radius: 10px; padding: 11px 13px; background: var(--surface);
+  transition: border-color 0.15s, background 0.15s;
 }
+.evidence-card.clickable { cursor: pointer; }
+.evidence-card.clickable:hover { border-color: var(--accent); }
+.evidence-card.active { border-color: var(--accent); background: var(--accent-soft); }
 .evidence-header {
-  display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 4px;
+  display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 4px; flex-wrap: wrap;
 }
 .evidence-field {
   font-family: ui-monospace, "JetBrains Mono", Consolas, monospace; font-size: 12px; color: var(--muted);
 }
+.ref-badge {
+  font-size: 11.5px; font-weight: 600; padding: 2px 9px; border-radius: 999px;
+  background: var(--bg-soft); color: var(--muted); border: 1px solid var(--border);
+}
+.ref-badge.active {
+  background: var(--accent); color: #ffffff; border-color: var(--accent);
+}
+
 .evidence-value {
   font-weight: 600; font-size: 13.5px; margin-bottom: 6px; word-break: break-word;
 }
 .evidence-quote {
   margin: 0; padding: 6px 10px; border-left: 2.5px solid var(--accent);
   background: var(--code-bg); border-radius: 0 6px 6px 0; color: var(--muted);
-  font-size: 12.5px; font-style: italic;
+  font-size: 12px; font-style: italic;
+}
+
+.quotes-split {
+  display: grid; grid-template-columns: 1fr 1.15fr; gap: 18px;
+  height: calc(100vh - 245px); min-height: 580px;
+}
+.quotes-fields {
+  display: flex; flex-direction: column; min-height: 0; border: 1px solid var(--border);
+  border-radius: 12px; padding: 14px; background: var(--bg-soft);
+}
+.quotes-pane-header {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 8px;
+  margin-bottom: 10px; font-weight: 600; font-size: 13px;
+}
+.quotes-pane-hint { color: var(--muted); font-weight: 400; font-size: 11.5px; }
+
+.quotes-viewer {
+  display: flex; flex-direction: column; min-height: 0; border: 1px solid var(--border);
+  border-radius: 12px; overflow: hidden; background: var(--surface);
+}
+.viewer-toolbar {
+  display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 10px 14px; border-bottom: 1px solid var(--border); background: var(--bg-soft);
+}
+.viewer-active-info {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; min-width: 0;
+}
+.viewer-active-field {
+  font-family: ui-monospace, "JetBrains Mono", Consolas, monospace; color: var(--muted); font-size: 12px;
+}
+.viewer-active-val { word-break: break-word; }
+.viewer-controls { display: flex; align-items: center; gap: 10px; }
+.zoom-controls {
+  display: flex; align-items: center; gap: 4px; background: var(--surface);
+  border: 1px solid var(--border); border-radius: 8px; padding: 2px 6px;
+}
+.zoom-btn {
+  border: none; background: none; color: var(--text); font-weight: 700;
+  width: 24px; height: 24px; border-radius: 5px;
+}
+.zoom-btn:hover { background: var(--bg-soft); }
+.zoom-label { font-size: 12px; color: var(--muted); min-width: 38px; text-align: center; }
+
+.viewer-quote-banner {
+  padding: 8px 14px; border-bottom: 1px solid var(--border); background: var(--accent-soft);
+  font-size: 12.5px;
+}
+.viewer-quote-label { font-weight: 600; color: var(--accent); margin-right: 4px; }
+
+.pdf-explorer-scroll {
+  flex: 1; overflow: auto; padding: 18px; background: var(--code-bg);
+  display: flex; flex-direction: column; align-items: center; gap: 20px;
+}
+.pdf-canvas-card {
+  border: 1.5px solid var(--border); border-radius: 10px; overflow: hidden;
+  background: #ffffff; box-shadow: 0 6px 18px rgb(0 0 0 / 0.12); transition: width 0.15s, border-color 0.15s;
+}
+.pdf-canvas-card.target-page { border-color: var(--accent); }
+.pdf-canvas-header {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 6px 12px; background: var(--bg-soft); border-bottom: 1px solid var(--border);
+  font-size: 12px; font-weight: 600; color: var(--muted);
+}
+.pdf-canvas-active-tag {
+  font-family: ui-monospace, "JetBrains Mono", Consolas, monospace;
+  font-size: 11px; color: var(--accent); background: var(--accent-soft);
+  padding: 1px 8px; border-radius: 999px;
+}
+.pdf-canvas-stage { position: relative; width: 100%; line-height: 0; }
+.pdf-page-img { width: 100%; height: auto; display: block; user-select: none; }
+
+.pdf-rect-overlay {
+  position: absolute; border-radius: 4px; cursor: pointer;
+  transition: transform 0.15s, box-shadow 0.15s, background 0.15s;
+}
+.pdf-rect-overlay.inactive {
+  background: rgb(37 99 235 / 0.10); border: 1px dashed rgb(37 99 235 / 0.40);
+}
+.pdf-rect-overlay.inactive:hover {
+  background: rgb(250 204 21 / 0.32); border: 1.5px solid #2563eb;
+}
+.pdf-rect-overlay.active {
+  background: rgb(250 204 21 / 0.42); border: 2px solid #2563eb;
+  box-shadow: 0 0 0 4px rgb(250 204 21 / 0.35), 0 4px 12px rgb(37 99 235 / 0.30);
+  z-index: 5;
+}
+
+.pdf-text-pages { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 14px; }
+.pdf-page-box { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--code-bg); }
+.pdf-page-box.target-page { border-color: var(--accent); }
+.pdf-page-bar {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 6px 12px; background: var(--bg-soft); border-bottom: 1px solid var(--border);
+  font-size: 12px; font-weight: 600; color: var(--muted);
+}
+.pdf-page-text {
+  margin: 0; padding: 12px; font-family: ui-monospace, "JetBrains Mono", Consolas, monospace;
+  font-size: 12px; line-height: 1.55; white-space: pre-wrap; word-break: break-word;
+}
+.pdf-highlight {
+  background: #fde047; color: #111827; padding: 1px 4px; border-radius: 4px; font-weight: 600;
+}
+
+@media (max-width: 1100px) {
+  .quotes-split { grid-template-columns: 1fr; height: auto; }
 }
 
 @media (max-width: 800px) {
