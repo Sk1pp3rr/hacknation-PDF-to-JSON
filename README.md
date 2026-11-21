@@ -35,6 +35,7 @@ Projekt oparty na komponentach Open Source oraz europejskim API LLM (np. Mistral
 │   └── benchmark.py                 # Benchmark przepustowości (batch równoległy)
 ├── tests/                           # Testy jednostkowe i integracyjne (pytest)
 ├── .env.example                     # Przykładowa konfiguracja zmiennych środowiskowych
+├── requirements.txt                 # Lista zależności Pythona (CPU-only, Open Source)
 └── pyproject.toml                   # Zależności i konfiguracja projektu
 ```
 
@@ -65,8 +66,8 @@ python -m venv .venv
 # Linux / macOS:
 source .venv/bin/activate
 
+pip install -r requirements.txt
 pip install -e ".[dev]"
-pip install pypdfium2 pytesseract
 cp .env.example .env
 ```
 
