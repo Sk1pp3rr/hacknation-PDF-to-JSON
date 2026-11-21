@@ -120,7 +120,7 @@ def test_hints_and_normalization_polish_formats() -> None:
     assert norm_przelew["przelew_bankowy"] == {
         "data_operacji": "2026-03-20",
         "kwota": 200.0,
-        "na_rachunek": "68438223049992295262834736",
+        "na_rachunek": "PL68438223049992295262834736",
         "numer_transakcji": None,
         "tytul": "opłata skarbowa",
         "z_rachunku": "PL05470680287581539721455024",
