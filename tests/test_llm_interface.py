@@ -645,6 +645,25 @@ def test_polish_checksum_validators() -> None:
 
     assert is_valid_nrb("60101010100081362231000000") is True
     assert is_valid_nrb("60101010100081362231000001") is False
+    assert is_valid_nrb("DE89 3704 0044 0532 0130 00") is True
+    assert is_valid_nrb("DE89 3704 0044 0532 0130 01") is False
+    assert is_valid_nrb("GB82 WEST 1234 5698 7654 32") is True
+
+    intl_text = (
+        "Z rachunku: DE89 3704 0044 0532 0130 00\n"
+        "Na rachunek: PL60 1010 1010 0081 3622 3100 0000\n"
+        "Kwota: 15000,00 PLN\nData: 2026-05-10\n"
+    )
+    intl_aug = augment_post_extraction(
+        DocumentType.PRZELEW,
+        {"przelew_bankowy": {"data_operacji": "2026-05-10", "kwota": 15000.0, "numer_transakcji": "TX1", "tytul": "wpis"}},
+        intl_text,
+    )
+    intl_val = validate_extraction(DocumentType.PRZELEW, intl_aug, intl_text, strict_checksums=True)
+    assert intl_val.valid is True
+    assert intl_val.data is not None
+    assert intl_val.data["przelew_bankowy"]["z_rachunku"] == "DE89370400440532013000"
+    assert intl_val.data["przelew_bankowy"]["na_rachunek"] == "60101010100081362231000000"
 
 
 def test_identifier_length_and_strict_checksum_modes() -> None:

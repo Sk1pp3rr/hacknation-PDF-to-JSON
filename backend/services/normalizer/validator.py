@@ -36,6 +36,9 @@ _REGON_RE = re.compile(r"(?i)\bREGON\b[:\s#-]*([0-9][0-9\s-]{7,16}[0-9])")
 _PESEL_LABELED_RE = re.compile(r"(?i)\bPESEL\b[:\s#-]*([0-9][0-9\s-]{9,15}[0-9])")
 _PESEL_STANDALONE_RE = re.compile(r"(?<!\d)(\d{11})(?!\d)")
 _NRB_RE = re.compile(r"(?i)(?<![0-9A-Za-z])(?:PL\s*)?(\d(?:[\s-]?\d){25})(?!\d)")
+_IBAN_TOKEN_RE = re.compile(
+    r"(?<![0-9A-Za-z])(?:(?:PL\s*)?\d(?:[\s-]?\d){25}|[A-Z]{2}\d{2}(?:[\s-]?[0-9A-Z]){11,30})(?![0-9A-Za-z])"
+)
 _BZP_RE = re.compile(r"(?i)\b(\d{4}\s*/\s*BZP\s*\d{8}(?:\s*/\s*\d{2})?)\b")
 _TED_SHORT_RE = re.compile(r"\b(\d{6}-\d{4})\b")
 _TED_OJ_RE = re.compile(r"(?i)\b(\d{4})/S\s*\d{1,3}-(\d{6})\b")
@@ -77,8 +80,12 @@ def _strip_account(value: Any) -> str | None:
     if value is None:
         return None
     cleaned = re.sub(r"[\s-]+", "", str(value)).upper()
-    if cleaned.startswith("PL"):
-        cleaned = cleaned[2:]
+    if not cleaned or cleaned.lower() in _NULL_PLACEHOLDERS:
+        return None
+    if cleaned.startswith("PL") and cleaned[2:].isdigit():
+        return cleaned[2:]
+    if re.match(r"^[A-Z]{2}\d{2}[0-9A-Z]{11,30}$", cleaned):
+        return cleaned
     digits = re.sub(r"\D", "", cleaned)
     return digits or None
 
@@ -170,12 +177,30 @@ def is_valid_pesel(value: str) -> bool:
 
 
 def is_valid_nrb(value: str) -> bool:
-    """Validate 26-digit Polish NRB / IBAN check digits (mod 97 == 1)."""
+    """Validate 26-digit Polish NRB or international ISO 13616 IBAN check digits (mod 97 == 1)."""
     s = _strip_account(value) or ""
-    if len(s) != 26:
-        return False
-    rearranged = s[2:] + "2521" + s[:2]
-    return int(rearranged) % 97 == 1
+    if s.isdigit():
+        if len(s) != 26:
+            return False
+        rearranged = s[2:] + "2521" + s[:2]
+        return int(rearranged) % 97 == 1
+    if re.match(r"^[A-Z]{2}\d{2}[0-9A-Z]{11,30}$", s):
+        moved = s[4:] + s[:4]
+        numeric = "".join(str(ord(ch) - 55) if ch.isalpha() else ch for ch in moved)
+        return int(numeric) % 97 == 1
+    return False
+
+
+def extract_accounts_in_order(text: str) -> list[str]:
+    """Extract Polish 26-digit NRBs and valid foreign IBANs in document order."""
+    accounts: list[str] = []
+    for m in _IBAN_TOKEN_RE.finditer(text or ""):
+        norm = _strip_account(m.group(0))
+        if not norm:
+            continue
+        if (norm.isdigit() and len(norm) == 26) or (not norm.isdigit() and is_valid_nrb(norm)):
+            accounts.append(norm)
+    return _dedupe(accounts)
 
 
 def is_valid_krs(value: str) -> bool:
@@ -236,7 +261,7 @@ def extract_identifier_hints(text: str) -> IdentifierHints:
     regons = [d for m in _REGON_RE.findall(text) if (d := _digits_only(m)) and len(d) in (9, 14)]
     pesels_labeled = [d for m in _PESEL_LABELED_RE.findall(text) if (d := _digits_only(m)) and len(d) == 11]
     pesels_standalone = [d for d in _PESEL_STANDALONE_RE.findall(text) if is_valid_pesel(d)]
-    nrbs = [d for m in _NRB_RE.findall(text) if (d := _digits_only(m)) and len(d) == 26]
+    nrbs = extract_accounts_in_order(text)
     bzps = [re.sub(r"\s+", "", m).upper() for m in _BZP_RE.findall(text)]
 
     teds: list[str] = list(_TED_SHORT_RE.findall(text))
@@ -476,6 +501,43 @@ def _check_identifier_field(
             warnings.append(f"{msg} (dane syntetyczne/zanonimizowane lub błąd OCR)")
 
 
+def _check_account_field(
+    field_path: str,
+    value: Any,
+    compact_source: str,
+    candidates: list[str],
+    strict_checksums: bool,
+    findings: list[tuple[str, str]],
+    warnings: list[str],
+) -> None:
+    if value is None:
+        return
+    norm = _strip_account(value) or ""
+    hint = f"; wykryte w dokumencie: {candidates}" if candidates else ""
+    is_pl_nrb = norm.isdigit() and len(norm) == 26
+    is_foreign_iban = bool(re.match(r"^[A-Z]{2}\d{2}[0-9A-Z]{11,30}$", norm))
+
+    if not (is_pl_nrb or is_foreign_iban):
+        findings.append(
+            (
+                field_path,
+                f"{field_path}='{value}' ma niepoprawny format rachunku (wymagane 26 cyfr NRB lub międzynarodowy IBAN){hint}",
+            )
+        )
+        return
+
+    if norm not in compact_source:
+        findings.append((field_path, f"{field_path}='{value}' nie występuje w tekście źródłowym{hint}"))
+        return
+
+    if not is_valid_nrb(norm):
+        msg = f"{field_path}='{value}' nie przechodzi weryfikacji cyfry kontrolnej"
+        if strict_checksums:
+            findings.append((field_path, f"{msg}{hint}"))
+        else:
+            warnings.append(f"{msg} (dane syntetyczne/zanonimizowane lub błąd OCR)")
+
+
 def _run_grounding_checks(
     doc_type: DocumentType,
     data: dict[str, Any],
@@ -491,24 +553,20 @@ def _run_grounding_checks(
     if doc_type == DocumentType.PRZELEW:
         pb = data.get("przelew_bankowy") or {}
         _check_iso_date("przelew_bankowy.data_operacji", pb.get("data_operacji"), findings)
-        _check_identifier_field(
+        _check_account_field(
             "przelew_bankowy.z_rachunku",
             pb.get("z_rachunku"),
             compact_source,
             hints.nrb,
-            (26,),
-            is_valid_nrb,
             strict_checksums,
             findings,
             warnings,
         )
-        _check_identifier_field(
+        _check_account_field(
             "przelew_bankowy.na_rachunek",
             pb.get("na_rachunek"),
             compact_source,
             hints.nrb,
-            (26,),
-            is_valid_nrb,
             strict_checksums,
             findings,
             warnings,

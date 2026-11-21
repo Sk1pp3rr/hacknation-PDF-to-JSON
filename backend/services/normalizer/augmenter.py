@@ -15,10 +15,10 @@ from backend.services.normalizer.validator import (
     _EMAIL_RE,
     _KRS_RE,
     _NIP_RE,
-    _NRB_RE,
     _PESEL_STANDALONE_RE,
     _REGON_RE,
     _digits_only,
+    extract_accounts_in_order,
     extract_identifier_hints,
     is_valid_pesel,
     normalize_date_str,
@@ -440,8 +440,7 @@ def _augment_przelew(data: dict[str, Any], source_text: str) -> None:
     pb.setdefault("na_rachunek", None)
     if pb.get("z_rachunku") is not None and pb.get("na_rachunek") is not None:
         return
-    nrbs = [d for m in _NRB_RE.findall(source_text) if (d := _digits_only(m)) and len(d) == 26]
-    ordered = list(dict.fromkeys(nrbs))
+    ordered = extract_accounts_in_order(source_text)
     if len(ordered) == 2:
         if pb.get("z_rachunku") is None:
             pb["z_rachunku"] = ordered[0]
@@ -543,11 +542,11 @@ def _match_on_page(field_path: str, value: Any, page_text: str) -> str | None:
                 if normalize_date_str(m.group(1)) == s_val:
                     return _snippet_around(page_text, m.start(), m.end())
 
-    # 3. Digits with optional separators (NIP, KRS, REGON, PESEL, NRB)
+    # 3. Digits or international IBAN with optional separators (NIP, KRS, REGON, PESEL, NRB, IBAN)
     digits = re.sub(r"\D", "", s_val)
-    if len(digits) in (9, 10, 11, 14, 26) and digits == s_val:
-        sep_pat = r"[\s-]*".join(re.escape(ch) for ch in digits)
-        m = re.search(sep_pat, page_text)
+    if (len(digits) in (9, 10, 11, 14, 26) and digits == s_val) or re.match(r"^[A-Z]{2}\d{2}[0-9A-Z]{11,30}$", s_val):
+        sep_pat = r"[\s-]*".join(re.escape(ch) for ch in s_val)
+        m = re.search(sep_pat, page_text, re.IGNORECASE)
         if m:
             return _snippet_around(page_text, m.start(), m.end())
 
