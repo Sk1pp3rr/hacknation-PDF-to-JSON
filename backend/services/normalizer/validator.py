@@ -82,8 +82,6 @@ def _strip_account(value: Any) -> str | None:
     cleaned = re.sub(r"[\s-]+", "", str(value)).upper()
     if not cleaned or cleaned.lower() in _NULL_PLACEHOLDERS:
         return None
-    if cleaned.startswith("PL") and cleaned[2:].isdigit():
-        return cleaned[2:]
     if re.match(r"^[A-Z]{2}\d{2}[0-9A-Z]{11,30}$", cleaned):
         return cleaned
     digits = re.sub(r"\D", "", cleaned)
@@ -192,13 +190,15 @@ def is_valid_nrb(value: str) -> bool:
 
 
 def extract_accounts_in_order(text: str) -> list[str]:
-    """Extract Polish 26-digit NRBs and valid foreign IBANs in document order."""
+    """Extract Polish NRBs/IBANs (preserving PL when present) and valid foreign IBANs in document order."""
     accounts: list[str] = []
     for m in _IBAN_TOKEN_RE.finditer(text or ""):
         norm = _strip_account(m.group(0))
         if not norm:
             continue
-        if (norm.isdigit() and len(norm) == 26) or (not norm.isdigit() and is_valid_nrb(norm)):
+        is_pl_with_prefix = norm.startswith("PL") and len(norm) == 28 and norm[2:].isdigit()
+        is_pl_digits = norm.isdigit() and len(norm) == 26
+        if is_pl_with_prefix or is_pl_digits or (not norm.isdigit() and is_valid_nrb(norm)):
             accounts.append(norm)
     return _dedupe(accounts)
 
