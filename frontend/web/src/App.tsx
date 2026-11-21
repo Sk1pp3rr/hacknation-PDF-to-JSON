@@ -36,8 +36,15 @@ function MoonIcon() {
   );
 }
 
+function formatUzpJson(data: unknown): string {
+  return JSON.stringify(data, null, 2).replace(
+    /("kwota"\s*:\s*)(-?\d+(?:\.\d+)?)/g,
+    (_match, prefix: string, num: string) => `${prefix}${Number(num).toFixed(2)}`,
+  );
+}
+
 function downloadJson(name: string, data: unknown) {
-  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  const blob = new Blob([formatUzpJson(data)], { type: "application/json" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
@@ -49,6 +56,13 @@ function downloadJson(name: string, data: unknown) {
 function formatJsonKey(fieldPath: string): string {
   const leaf = fieldPath.split(".").pop() ?? fieldPath;
   return leaf.replace(/\[\d+\]$/, "");
+}
+
+function formatFieldValue(fieldPath: string, value: unknown): string {
+  if (formatJsonKey(fieldPath) === "kwota" && typeof value === "number") {
+    return value.toFixed(2);
+  }
+  return String(value);
 }
 
 function HighlightedPageText({ text, quote }: { text: string; quote: string | null }) {
@@ -146,7 +160,7 @@ function QuotesWithPdfView({
                       {isSelected ? "Podświetlono" : "Pokaż"}
                     </span>
                   </div>
-                  <div className="evidence-value">{String(ev.value)}</div>
+                  <div className="evidence-value">{formatFieldValue(ev.field, ev.value)}</div>
                   <blockquote className="evidence-quote">
                     {ev.quote ? `„${ev.quote}”` : "Nie znaleziono bezpośredniego fragmentu w tekście."}
                   </blockquote>
@@ -163,7 +177,7 @@ function QuotesWithPdfView({
             {activeEv ? (
               <>
                 <span className="viewer-active-field" title={activeEv.field}>"{formatJsonKey(activeEv.field)}":</span>{" "}
-                <strong className="viewer-active-val">{String(activeEv.value)}</strong>
+                <strong className="viewer-active-val">{formatFieldValue(activeEv.field, activeEv.value)}</strong>
               </>
             ) : (
               <span>Eksplorator PDF</span>
@@ -247,7 +261,7 @@ function QuotesWithPdfView({
                             width: `${rect.w}%`,
                             height: `${rect.h}%`,
                           }}
-                          title={`"${formatJsonKey(ev.field)}": ${String(ev.value)}`}
+                          title={`"${formatJsonKey(ev.field)}": ${formatFieldValue(ev.field, ev.value)}`}
                           onClick={() => setSelectedIdx(evIdx)}
                         />
                       ));
@@ -287,7 +301,7 @@ function ResultView({ item }: { item: QueueItem }) {
   if (item.status === "error") return <div className="alert alert-error">{item.error}</div>;
 
   const { data, meta } = item.result!;
-  const json = JSON.stringify(data, null, 2);
+  const json = formatUzpJson(data);
   const isNegative = Object.keys(data).length === 0;
   const evidence = meta.evidence ?? [];
   const pages = meta.pages ?? [];
