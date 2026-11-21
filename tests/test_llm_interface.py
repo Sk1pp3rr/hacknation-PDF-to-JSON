@@ -98,7 +98,7 @@ def test_hints_and_normalization_polish_formats() -> None:
     assert hints.nip == ["9999284065"]
     assert hints.krs == ["9999405188"]
     assert hints.regon == ["999642785"]
-    assert hints.nrb == ["05470680287581539721455024"]
+    assert hints.nrb == ["PL05470680287581539721455024"]
     assert hints.bzp == ["2026/BZP00999778"]
     assert hints.ted == ["641009-2025"]
     assert hints.emails == ["biuro@poczta.example"]
@@ -120,10 +120,10 @@ def test_hints_and_normalization_polish_formats() -> None:
     assert norm_przelew["przelew_bankowy"] == {
         "data_operacji": "2026-03-20",
         "kwota": 200.0,
-        "na_rachunek": "68438223049992295262834736",
+        "na_rachunek": "PL68438223049992295262834736",
         "numer_transakcji": None,
         "tytul": "opłata skarbowa",
-        "z_rachunku": "05470680287581539721455024",
+        "z_rachunku": "PL05470680287581539721455024",
     }
 
     norm_odw = normalize_payload(
@@ -381,7 +381,7 @@ def test_extract_document_single_shot_przelew_and_odwolanie() -> None:
     res_prz = asyncio.run(extract_document(DocumentType.PRZELEW, przelew_text, client=client, mode="single"))
     assert res_prz.valid is True
     assert res_prz.attempts == 1
-    assert PrzelewSchema.model_validate(res_prz.data).przelew_bankowy.z_rachunku == "05470680287581539721455024"
+    assert PrzelewSchema.model_validate(res_prz.data).przelew_bankowy.z_rachunku == "PL05470680287581539721455024"
 
     res_odw = asyncio.run(extract_document(DocumentType.ODWOLANIE, odwolanie_text, client=client, mode="single"))
     assert res_odw.valid is True
@@ -645,6 +645,25 @@ def test_polish_checksum_validators() -> None:
 
     assert is_valid_nrb("60101010100081362231000000") is True
     assert is_valid_nrb("60101010100081362231000001") is False
+    assert is_valid_nrb("DE89 3704 0044 0532 0130 00") is True
+    assert is_valid_nrb("DE89 3704 0044 0532 0130 01") is False
+    assert is_valid_nrb("GB82 WEST 1234 5698 7654 32") is True
+
+    intl_text = (
+        "Z rachunku: DE89 3704 0044 0532 0130 00\n"
+        "Na rachunek: PL60 1010 1010 0081 3622 3100 0000\n"
+        "Kwota: 15000,00 PLN\nData: 2026-05-10\n"
+    )
+    intl_aug = augment_post_extraction(
+        DocumentType.PRZELEW,
+        {"przelew_bankowy": {"data_operacji": "2026-05-10", "kwota": 15000.0, "numer_transakcji": "TX1", "tytul": "wpis"}},
+        intl_text,
+    )
+    intl_val = validate_extraction(DocumentType.PRZELEW, intl_aug, intl_text, strict_checksums=True)
+    assert intl_val.valid is True
+    assert intl_val.data is not None
+    assert intl_val.data["przelew_bankowy"]["z_rachunku"] == "DE89370400440532013000"
+    assert intl_val.data["przelew_bankowy"]["na_rachunek"] == "PL60101010100081362231000000"
 
 
 def test_identifier_length_and_strict_checksum_modes() -> None:
@@ -937,7 +956,13 @@ def test_a1_deterministic_id_binding_across_all_60_cases() -> None:
             DocumentType.PRZELEW,
             augment_post_extraction(DocumentType.PRZELEW, minimal_llm, text),
         )
-        assert aug == expected, f"A1 przelew mismatch in {pdf_path}"
+        aug_pb = aug["przelew_bankowy"]
+        assert aug_pb["z_rachunku"].removeprefix("PL") == pb["z_rachunku"], f"A1 przelew z_rachunku mismatch in {pdf_path}"
+        assert aug_pb["na_rachunek"].removeprefix("PL") == pb["na_rachunek"], f"A1 przelew na_rachunek mismatch in {pdf_path}"
+        assert aug_pb["data_operacji"] == pb["data_operacji"]
+        assert aug_pb["kwota"] == pb["kwota"]
+        assert aug_pb["numer_transakcji"] == pb["numer_transakcji"]
+        assert aug_pb["tytul"] == pb["tytul"]
 
 
 def test_field_evidence_quotes_and_parallel_batch() -> None:
@@ -999,7 +1024,7 @@ def test_field_evidence_quotes_and_parallel_batch() -> None:
     assert outcomes[0].valid is True
     assert outcomes[0].evidence
     assert "evidence" not in outcomes[0].data
-    assert PrzelewSchema.model_validate(outcomes[0].data).przelew_bankowy.z_rachunku == "05470680287581539721455024"
+    assert PrzelewSchema.model_validate(outcomes[0].data).przelew_bankowy.z_rachunku == "PL05470680287581539721455024"
     assert outcomes[2].mode == "skipped"
 
 
