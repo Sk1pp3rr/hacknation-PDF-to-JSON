@@ -46,14 +46,3 @@ Priorytety wynikające z oceny konkursowej:
 5. **Uzasadnianie decyzji:** Przed każdą zmianą wyjaśnij swoje rozumowanie i uzasadnij decyzję w odpowiedzi.
 6. **Zrozumienie problemu:** Zanim zaczniesz pisać kod, upewnij się że w pełni rozumiesz problem, specyfikacje i ograniczenia. Zadawaj pytania jeśli czegoś nie rozumiesz.
 7. **Unikanie halucynacji:** Nigdy nie wprowadzaj w kodzie nowych klas, modeli, funkcji, zmiennych czy modułów bez wyraźnej, szczegółowej instrukcji oraz uzasadnienia.
-
----
-
-## 5. Dziennik decyzji architektonicznych (Memory Bank)
-* Zespół i agenci aktualizują tę sekcję na bieżąco po podjęciu decyzji technologicznych.*
-
-- **Silnik parsowania PDF / OCR:** `[DO UZUPEŁNIENIA]`
-- **Dostawca API i model(e) LLM (open source):** `[DO UZUPEŁNIENIA]`
-- **Format plików konfiguracyjnych dla klas dokumentów:** `[DO UZUPEŁNIENIA]`
-- **Sposób obsługi dokumentów negatywnych w JSON:** `[DO UZUPEŁNIENIA]`
-- **Skrypt i komenda do lokalnego pomiaru F1 Score:** `[DO UZUPEŁNIENIA]`
