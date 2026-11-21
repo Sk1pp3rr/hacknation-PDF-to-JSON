@@ -16,7 +16,7 @@ sys.path.insert(0, str(REPO_ROOT))
 from backend.config import settings  # noqa: E402
 from backend.services.classifier import classify_document  # noqa: E402
 from backend.services.extractor import LLMClient, extract_document  # noqa: E402
-from backend.services.normalizer import extract_identifier_hints  # noqa: E402
+from backend.services.normalizer import extract_identifier_hints, format_uzp_json  # noqa: E402
 from pypdf import PdfReader  # noqa: E402
 import io  # noqa: E402
 
@@ -145,7 +145,7 @@ def main() -> int:
             print(f"  - {ev.field} = {ev.value!r} [{pg}]: {qt}")
 
     print("\nWygenerowany JSON:")
-    print(json.dumps(outcome.data, ensure_ascii=False, indent=2))
+    print(format_uzp_json(outcome.data))
 
     if args.compare:
         if args.compare.is_file():
