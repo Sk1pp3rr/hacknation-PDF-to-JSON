@@ -1,8 +1,8 @@
 """Pydantic schemas representing the canonical UZP JSON output."""
 
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from backend.core.models import DocumentType
 
@@ -54,7 +54,16 @@ class OdwolujacyItem(BaseModel):
     nip: str | None = None
     regon: str | None = None
     przez_pelnomocnika: int = Field(alias="przez-pelnomocnika", ge=0, le=1)
-    pelnomocnik: PelnomocnikOdwolujacego | None = None
+    pelnomocnik: list[PelnomocnikOdwolujacego] = Field(default_factory=list)
+
+    @field_validator("pelnomocnik", mode="before")
+    @classmethod
+    def _coerce_pelnomocnik(cls, value: Any) -> Any:
+        if value is None:
+            return []
+        if isinstance(value, dict):
+            return [] if all(v is None for v in value.values()) else [value]
+        return value
 
 
 class ZamawiajacyItem(BaseModel):

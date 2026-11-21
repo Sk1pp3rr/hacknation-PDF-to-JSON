@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 from datetime import date
+import json
 import re
 from typing import Any, Callable, Iterable
 
@@ -331,8 +332,10 @@ def _normalize_przelew(data: dict[str, Any]) -> None:
     pb["z_rachunku"] = _strip_account(pb.get("z_rachunku"))
     if "kwota" in pb:
         parsed_amount = _parse_amount(pb.get("kwota"))
-        if parsed_amount is not None or pb.get("kwota") is None:
-            pb["kwota"] = parsed_amount
+        if parsed_amount is not None:
+            pb["kwota"] = round(parsed_amount, 2)
+        elif pb.get("kwota") is None:
+            pb["kwota"] = None
 
 
 def _normalize_odwolanie(data: dict[str, Any]) -> None:
@@ -366,10 +369,17 @@ def _normalize_odwolanie(data: dict[str, Any]) -> None:
             if "przez-pelnomocnika" not in item and "przez_pelnomocnika" in item:
                 item["przez-pelnomocnika"] = item.pop("przez_pelnomocnika")
             rep = item.get("pelnomocnik")
-            if isinstance(rep, dict) and all(v is None for v in rep.values()):
-                item["pelnomocnik"] = None
-                rep = None
-            has_rep = isinstance(rep, dict)
+            if rep is None:
+                reps: list[Any] = []
+            elif isinstance(rep, dict):
+                reps = [rep]
+            elif isinstance(rep, list):
+                reps = rep
+            else:
+                reps = []
+            cleaned_reps = [r for r in reps if isinstance(r, dict) and any(v is not None for v in r.values())]
+            item["pelnomocnik"] = cleaned_reps
+            has_rep = len(cleaned_reps) > 0
             if item.get("przez-pelnomocnika") is None:
                 item["przez-pelnomocnika"] = 1 if has_rep else 0
             elif has_rep and item.get("przez-pelnomocnika") == 0:
@@ -729,4 +739,14 @@ def validate_extraction(
         errors=[msg for _, msg in grounding_findings],
         failed_fields=_dedupe(path for path, _ in grounding_findings),
         warnings=warnings,
+    )
+
+
+def format_uzp_json(data: dict[str, Any], *, indent: int = 2) -> str:
+    """Serialize UZP payload to JSON ensuring monetary amounts keep two decimal places."""
+    raw = json.dumps(data, ensure_ascii=False, indent=indent)
+    return re.sub(
+        r'("kwota"\s*:\s*)(-?\d+(?:\.\d+)?)',
+        lambda m: f"{m.group(1)}{float(m.group(2)):.2f}",
+        raw,
     )

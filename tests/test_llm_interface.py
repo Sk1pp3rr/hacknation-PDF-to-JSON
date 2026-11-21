@@ -24,6 +24,7 @@ from backend.services.normalizer import (
     augment_post_extraction,
     extract_header_city_and_date,
     extract_identifier_hints,
+    format_uzp_json,
     is_valid_nip,
     is_valid_nrb,
     is_valid_pesel,
@@ -76,6 +77,7 @@ def test_to_strict_json_schema_compliance() -> None:
     odwolujacy_props = odw_schema["properties"]["Odwolujacy"]["items"]["properties"]
     assert "przez-pelnomocnika" in odwolujacy_props
     assert "przez_pelnomocnika" not in odwolujacy_props
+    assert odwolujacy_props["pelnomocnik"]["type"] == "array"
 
     pel_schema = to_strict_json_schema(PelnomocnictwoSchema, force_string_fields={"pesel"})
     _assert_all_objects_strict(pel_schema)
@@ -157,7 +159,7 @@ def test_hints_and_normalization_polish_formats() -> None:
     assert norm_odw["OdwolanieKIO"]["data"] == "2025-06-16"
     assert norm_odw["OdwolanieKIO"]["czynnosc_dzien"] == "2025-06-10"
     assert norm_odw["OdwolanieKIO"]["czynnosc_opis"] == CZYNNOSC_OPIS_BY_ID[9]
-    assert norm_odw["Odwolujacy"][0]["pelnomocnik"] is None
+    assert norm_odw["Odwolujacy"][0]["pelnomocnik"] == []
     assert norm_odw["ZamowieniePubliczne"]["numer_bzp"] == "2026/BZP00999778"
     assert norm_odw["ZamowieniePubliczne"]["numer_ted"] == "641009-2025"
 
@@ -750,7 +752,7 @@ def test_augmenter_helpers_and_post_extraction() -> None:
     )
     assert len(aug_odw["Odwolujacy"]) == 1
     assert aug_odw["Odwolujacy"][0]["nazwa"] == "Belmoria S.A."
-    assert aug_odw["Odwolujacy"][0]["pelnomocnik"]["imie_nazwisko"] == "Aleksandra Marciniak"
+    assert aug_odw["Odwolujacy"][0]["pelnomocnik"] == [{"imie_nazwisko": "Aleksandra Marciniak", "mail": None}]
     assert aug_odw["Zamawiajacy"][0]["prowadzacy_postepowanie"] is None
     assert aug_odw["OdwolanieKIO"]["data"] is None
     assert aug_odw["OdwolanieKIO"]["miejscowosc"] is None
@@ -857,7 +859,10 @@ def test_bielik_refinements_empty_zamawiajacy_placeholders_and_second_rep() -> N
         "ZamowieniePubliczne": {"numer_bzp": "YYYY/BZP########", "numer_ted": "NNNNNN-YYYY"},
     }
     augmented = augment_post_extraction(DocumentType.ODWOLANIE, empty_zam, text)
-    assert augmented["Odwolujacy"][0]["pelnomocnik"]["imie_nazwisko"] == "Bartosz Szymanski"
+    assert [r["imie_nazwisko"] for r in augmented["Odwolujacy"][0]["pelnomocnik"]] == [
+        "Bartosz Szymanski",
+        "Cezary Wierzbicki",
+    ]
 
     outcome = validate_extraction(DocumentType.ODWOLANIE, augmented, text)
     assert outcome.valid is False
@@ -886,12 +891,14 @@ def test_a1_deterministic_id_binding_across_all_60_cases() -> None:
                     "nazwa": o["nazwa"],
                     "przez-pelnomocnika": o["przez-pelnomocnika"],
                     "pelnomocnik": (
-                        {
-                            "imie_nazwisko": o["pelnomocnik"]["imie_nazwisko"],
-                            "nazwa": o["pelnomocnik"]["nazwa"],
-                        }
+                        [
+                            {
+                                "imie_nazwisko": o["pelnomocnik"]["imie_nazwisko"],
+                                "nazwa": o["pelnomocnik"]["nazwa"],
+                            }
+                        ]
                         if o.get("pelnomocnik")
-                        else None
+                        else []
                     ),
                 }
                 for o in expected["Odwolujacy"]
@@ -912,7 +919,23 @@ def test_a1_deterministic_id_binding_across_all_60_cases() -> None:
             DocumentType.ODWOLANIE,
             augment_post_extraction(DocumentType.ODWOLANIE, minimal_llm, text),
         )
-        assert aug == expected, f"A1 odwolanie mismatch in {pdf_path}"
+        assert aug["OdwolanieKIO"] == expected["OdwolanieKIO"], f"A1 OdwolanieKIO mismatch in {pdf_path}"
+        assert aug["Zamawiajacy"] == expected["Zamawiajacy"], f"A1 Zamawiajacy mismatch in {pdf_path}"
+        assert aug["ZamowieniePubliczne"] == expected["ZamowieniePubliczne"], f"A1 ZamowieniePubliczne mismatch in {pdf_path}"
+        assert len(aug["Odwolujacy"]) == len(expected["Odwolujacy"])
+        for aug_o, exp_o in zip(aug["Odwolujacy"], expected["Odwolujacy"]):
+            for k in ("krs", "nazwa", "nip", "regon", "przez-pelnomocnika"):
+                assert aug_o[k] == exp_o[k], f"A1 {k} mismatch in {pdf_path}"
+            exp_rep = exp_o.get("pelnomocnik")
+            if exp_rep:
+                assert isinstance(aug_o["pelnomocnik"], list) and len(aug_o["pelnomocnik"]) >= 1
+                assert aug_o["pelnomocnik"][0] == exp_rep, f"A1 pelnomocnik[0] mismatch in {pdf_path}"
+                for rep_entry in aug_o["pelnomocnik"]:
+                    assert rep_entry.get("imie_nazwisko")
+                    assert rep_entry.get("nazwa") == exp_rep.get("nazwa")
+                    assert rep_entry.get("mail") == exp_rep.get("mail")
+            else:
+                assert aug_o["pelnomocnik"] == []
 
     for pdf_path in sorted(dane_dir.glob("przyklad_*/pelnomocnictwo.pdf")):
         expected = json.loads(pdf_path.with_suffix(".json").read_text(encoding="utf-8"))
@@ -1026,6 +1049,16 @@ def test_field_evidence_quotes_and_parallel_batch() -> None:
     assert "evidence" not in outcomes[0].data
     assert PrzelewSchema.model_validate(outcomes[0].data).przelew_bankowy.z_rachunku == "PL05470680287581539721455024"
     assert outcomes[2].mode == "skipped"
+
+
+def test_format_uzp_json_two_decimal_amount() -> None:
+    formatted_200 = format_uzp_json({"przelew_bankowy": {"kwota": 200.0}})
+    assert '"kwota": 200.00' in formatted_200
+    assert json.loads(formatted_200)["przelew_bankowy"]["kwota"] == 200.0
+
+    formatted_17_5 = format_uzp_json({"przelew_bankowy": {"kwota": 17.5}})
+    assert '"kwota": 17.50' in formatted_17_5
+    assert json.loads(formatted_17_5)["przelew_bankowy"]["kwota"] == 17.5
 
 
 

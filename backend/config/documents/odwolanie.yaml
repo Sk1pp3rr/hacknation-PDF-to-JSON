@@ -39,7 +39,7 @@ ekstrakcja:
     - "czynnosc_dzien i czynnosc_powod_id ustalaj WYŁĄCZNIE dla pierwszego zarzutu/zaskarżonej czynności."
     - "Kody czynnosc_powod_id (1-12): {czynnosc_dict}."
     - "Odwolujacy to WYŁĄCZNIE podmiot z sekcji ODWOŁUJĄCY (nigdy nie dodawaj tam Zamawiającego ani Wykonawcy wybranego!); jeśli jest konsorcjum, podaj tylko Lidera; przez-pelnomocnika=1 gdy działa pełnomocnik, inaczej 0."
-    - "pelnomocnik.imie_nazwisko to imię i nazwisko pierwszego pełnomocnika (bez tytułu zawodowego), a pelnomocnik.nazwa to nazwa kancelarii/firmy (np. z adresu do korespondencji), NIE imię i nazwisko."
+    - "pelnomocnik to tablica obiektów dla WSZYSTKICH pełnomocników Odwołującego (pusta lista [] gdy przez-pelnomocnika=0); w każdym elemencie imie_nazwisko podaj bez tytułu zawodowego, a nazwa to nazwa kancelarii/firmy (np. z adresu do korespondencji), NIE imię i nazwisko."
     - "numer_postepowania to znak/nr referencyjny sprawy (np. ZP.431.2026), a tytul to nazwa zamówienia po „pn.”."
   section_swarm:
     header_max_tokens: 320
@@ -50,7 +50,7 @@ ekstrakcja:
       - Zwracaj null jeśli brak informacji w tekście (nie zgaduj i nie przepisuj wzorców).
       - Odwolujacy to WYŁĄCZNIE podmiot z sekcji ODWOŁUJĄCY (dla konsorcjum: tylko Lider; nigdy nie dodawaj tam Zamawiającego ani Wykonawcy wybranego!).
       - przez-pelnomocnika=1 gdy działa pełnomocnik, inaczej 0.
-      - pelnomocnik.imie_nazwisko to imię i nazwisko pierwszego pełnomocnika (bez tytułu zawodowego), a pelnomocnik.nazwa to nazwa kancelarii/firmy zatrudniającej pełnomocnika (np. z adresu do korespondencji), NIE imię i nazwisko.
+      - pelnomocnik to tablica obiektów dla WSZYSTKICH pełnomocników Odwołującego (pusta lista [] gdy przez-pelnomocnika=0); imie_nazwisko bez tytułu zawodowego, a nazwa to nazwa kancelarii/firmy zatrudniającej pełnomocnika (np. z adresu do korespondencji), NIE imię i nazwisko.
       - numer_postepowania to znak/nr referencyjny sprawy (np. ZP.431.2026), a tytul to nazwa zamówienia po „pn.”.
     action_system_prompt: |
       Ekstrahujesz WYŁĄCZNIE datę czynności (czynnosc_dzien, YYYY-MM-DD lub null) oraz czynnosc_powod_id (liczba 1-12) wyłącznie dla pierwszego zarzutu/zaskarżonej czynności.

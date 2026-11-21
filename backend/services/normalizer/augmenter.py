@@ -128,14 +128,6 @@ def strip_person_titles(name: str | None) -> str | None:
     return cleaned or None
 
 
-def _clean_single_representative(name: str | None) -> str | None:
-    cleaned = strip_person_titles(name)
-    if cleaned and "," in cleaned:
-        first = cleaned.split(",", 1)[0].strip()
-        return strip_person_titles(first)
-    return cleaned
-
-
 def _entity_keys(entity: dict[str, Any]) -> tuple[set[str], set[str], set[str]]:
     nips = {re.sub(r"\D", "", str(entity["nip"]))} if entity.get("nip") else set()
     krss = {re.sub(r"\D", "", str(entity["krs"]))} if entity.get("krs") else set()
@@ -275,11 +267,53 @@ def _extract_first_company_name(text: str) -> str | None:
     return found or None
 
 
+def _expand_odwolanie_representatives(raw_rep: Any, rep_mail: str | None) -> list[dict[str, Any]]:
+    if raw_rep is None:
+        raw_reps: list[dict[str, Any]] = []
+    elif isinstance(raw_rep, dict):
+        raw_reps = [dict(raw_rep)]
+    elif isinstance(raw_rep, list):
+        raw_reps = [dict(r) for r in raw_rep if isinstance(r, dict)]
+    else:
+        raw_reps = []
+
+    expanded: list[dict[str, Any]] = []
+    for rep in raw_reps:
+        rep.setdefault("mail", None)
+        raw_mail = rep.get("mail")
+        if raw_mail is None and rep_mail is not None:
+            rep["mail"] = rep_mail
+        elif isinstance(raw_mail, str) and ("," in raw_mail or ";" in raw_mail):
+            first_mail = _EMAIL_RE.search(raw_mail)
+            rep["mail"] = first_mail.group(0) if first_mail else rep_mail
+
+        raw_name = rep.get("imie_nazwisko")
+        if isinstance(raw_name, str) and "," in raw_name:
+            names = [
+                cleaned
+                for part in raw_name.split(",")
+                if (cleaned := strip_person_titles(part)) is not None
+            ]
+            if names:
+                for idx, name in enumerate(names):
+                    entry = dict(rep) if idx == 0 else {"nazwa": rep.get("nazwa"), "mail": rep.get("mail")}
+                    entry["imie_nazwisko"] = name
+                    expanded.append(entry)
+                continue
+
+        if isinstance(raw_name, str):
+            rep["imie_nazwisko"] = strip_person_titles(raw_name)
+        expanded.append(rep)
+
+    return expanded
+
+
 def _augment_odwolanie(data: dict[str, Any], source_text: str) -> None:
     header_text = _header_slice_only(source_text)
     rep_mail = _extract_representative_mail(header_text)
-    m_lawyer = _LAWYER_NAME_RE.search(header_text)
-    header_lawyer = re.sub(r"\s+", " ", m_lawyer.group(1)).strip() if m_lawyer else None
+    header_lawyers = list(
+        dict.fromkeys(re.sub(r"\s+", " ", m.group(1)).strip() for m in _LAWYER_NAME_RE.finditer(header_text))
+    )
 
     odwolujacy = data.get("Odwolujacy")
     if isinstance(odwolujacy, list):
@@ -287,19 +321,32 @@ def _augment_odwolanie(data: dict[str, Any], source_text: str) -> None:
             if not isinstance(item, dict):
                 continue
             _fill_missing_entity_ids(item, header_text, include_regon=True)
-            rep = item.get("pelnomocnik")
-            if isinstance(rep, dict):
-                rep.setdefault("mail", None)
-                if isinstance(rep.get("imie_nazwisko"), str):
-                    rep["imie_nazwisko"] = _clean_single_representative(rep["imie_nazwisko"])
-                if header_lawyer and (not rep.get("imie_nazwisko") or rep.get("imie_nazwisko") not in header_text):
-                    rep["imie_nazwisko"] = header_lawyer
-                raw_mail = rep.get("mail")
-                if raw_mail is None and rep_mail is not None:
-                    rep["mail"] = rep_mail
-                elif isinstance(raw_mail, str) and ("," in raw_mail or ";" in raw_mail):
-                    first_mail = _EMAIL_RE.search(raw_mail)
-                    rep["mail"] = first_mail.group(0) if first_mail else rep_mail
+            reps = _expand_odwolanie_representatives(item.get("pelnomocnik"), rep_mail)
+            firm_name = next((r.get("nazwa") for r in reps if isinstance(r.get("nazwa"), str) and r["nazwa"]), None)
+            mail_val = next((r.get("mail") for r in reps if isinstance(r.get("mail"), str) and r["mail"]), rep_mail)
+
+            if header_lawyers and (item.get("przez-pelnomocnika") == 1 or reps):
+                by_name = {
+                    r["imie_nazwisko"].strip().lower(): r
+                    for r in reps
+                    if isinstance(r.get("imie_nazwisko"), str) and r["imie_nazwisko"].strip()
+                }
+                merged_reps: list[dict[str, Any]] = []
+                for lawyer_name in header_lawyers:
+                    existing = by_name.get(lawyer_name.lower())
+                    if existing is not None:
+                        entry = dict(existing)
+                        entry["imie_nazwisko"] = lawyer_name
+                        if not entry.get("nazwa"):
+                            entry["nazwa"] = firm_name
+                        if not entry.get("mail"):
+                            entry["mail"] = mail_val
+                    else:
+                        entry = {"imie_nazwisko": lawyer_name, "nazwa": firm_name, "mail": mail_val}
+                    merged_reps.append(entry)
+                item["pelnomocnik"] = merged_reps
+            else:
+                item["pelnomocnik"] = [r for r in reps if any(v is not None for v in r.values())]
 
     zamawiajacy = data.get("Zamawiajacy")
     if isinstance(zamawiajacy, list):
