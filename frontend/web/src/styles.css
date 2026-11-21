@@ -244,26 +244,16 @@ h1 { font-size: 16px; margin: 0; font-weight: 600; }
 .viewer-quote-label { font-weight: 600; color: var(--accent); margin-right: 4px; }
 
 .pdf-explorer-scroll {
-  flex: 1; overflow: auto; padding: 18px; background: var(--code-bg);
-  display: flex; flex-direction: column; align-items: center; gap: 20px;
+  flex: 1; overflow: auto; padding: 16px; background: var(--code-bg);
+  display: flex; flex-direction: column; align-items: center;
 }
-.pdf-canvas-card {
+.pdf-document-sheet {
   border: 1.5px solid var(--border); border-radius: 10px; overflow: hidden;
-  background: #ffffff; box-shadow: 0 6px 18px rgb(0 0 0 / 0.12); transition: width 0.15s, border-color 0.15s;
+  background: #ffffff; box-shadow: 0 6px 18px rgb(0 0 0 / 0.12);
+  display: flex; flex-direction: column; gap: 0; transition: width 0.15s;
 }
-.pdf-canvas-card.target-page { border-color: var(--accent); }
-.pdf-canvas-header {
-  display: flex; justify-content: space-between; align-items: center;
-  padding: 6px 12px; background: var(--bg-soft); border-bottom: 1px solid var(--border);
-  font-size: 12px; font-weight: 600; color: var(--muted);
-}
-.pdf-canvas-active-tag {
-  font-family: ui-monospace, "JetBrains Mono", Consolas, monospace;
-  font-size: 11px; color: var(--accent); background: var(--accent-soft);
-  padding: 1px 8px; border-radius: 999px;
-}
-.pdf-canvas-stage { position: relative; width: 100%; line-height: 0; }
-.pdf-page-img { width: 100%; height: auto; display: block; user-select: none; }
+.pdf-canvas-stage { position: relative; width: 100%; line-height: 0; margin: 0; padding: 0; }
+.pdf-page-img { width: 100%; height: auto; display: block; user-select: none; margin: 0; padding: 0; }
 
 .pdf-rect-overlay {
   position: absolute; border-radius: 4px; cursor: pointer;
