@@ -15,10 +15,9 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from backend.config import settings  # noqa: E402
 from backend.services.classifier import classify_document  # noqa: E402
-from backend.services.llm_client import LLMClient  # noqa: E402
-from backend.services.llm_extractor import extract_document  # noqa: E402
-from backend.services.pdf_parser import extract_text_from_pdf_file  # noqa: E402
-from backend.services.validator import extract_identifier_hints  # noqa: E402
+from backend.services.extractor import LLMClient, extract_document  # noqa: E402
+from backend.services.normalizer import extract_identifier_hints  # noqa: E402
+from backend.services.parser import extract_text_from_pdf_file  # noqa: E402
 
 
 def _flatten_leaves(obj: Any, prefix: str = "") -> dict[str, Any]:

@@ -1,19 +1,10 @@
 """Pydantic schemas representing the canonical UZP JSON output."""
 
-from enum import StrEnum
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-
-class DocumentType(StrEnum):
-    """Supported document classes in an appeal case."""
-
-    ODWOLANIE = "odwolanie"
-    PELNOMOCNICTWO = "pelnomocnictwo"
-    PRZELEW = "przelew"
-    DOWOD_WPLATY = "przelew"  # Alias for backward compatibility with classifier/smoke tests
-    INNY = "inny"
+from backend.core.models import DocumentType
 
 
 # --- 1. Odwołanie (odwolanie.json) ---
@@ -154,7 +145,7 @@ class PrzelewSchema(BaseModel):
     przelew_bankowy: PrzelewBankowy
 
 
-# --- Registry & API envelope ---
+# --- Registry ---
 
 
 SCHEMA_REGISTRY: dict[DocumentType, type[BaseModel]] = {
@@ -162,18 +153,3 @@ SCHEMA_REGISTRY: dict[DocumentType, type[BaseModel]] = {
     DocumentType.PELNOMOCNICTWO: PelnomocnictwoSchema,
     DocumentType.PRZELEW: PrzelewSchema,
 }
-
-
-class DocumentSegment(BaseModel):
-    """Classified text segment extracted from an input PDF."""
-
-    doc_type: DocumentType
-    text: str
-
-
-class ExtractionResult(BaseModel):
-    """Structured output returned by the API."""
-
-    filename: str
-    documents: list[DocumentSegment] = Field(default_factory=list)
-    data: dict = Field(default_factory=dict, description="Docelowa struktura JSON zgodna ze schematem UZP")

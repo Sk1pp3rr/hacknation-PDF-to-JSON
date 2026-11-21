@@ -8,7 +8,7 @@ import httpx
 from pydantic import BaseModel
 
 from backend.config import settings
-from backend.services.schema_utils import build_response_format
+from backend.services.extractor.schema_utils import build_response_format
 
 
 class LLMClientError(RuntimeError):
@@ -41,7 +41,7 @@ class ChatCompletionResult(BaseModel):
 
 
 class LLMClient:
-    """Thin async client for OpenAI-compatible EU endpoints (Mistral, Scaleway, OVHcloud)."""
+    """Thin async client for OpenAI-compatible EU endpoints (Mistral, Scaleway, OVHcloud, Ollama)."""
 
     def __init__(
         self,

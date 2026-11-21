@@ -4,8 +4,8 @@ from copy import deepcopy
 import re
 from typing import Any
 
-from backend.schemas import DocumentType
-from backend.services.validator import extract_identifier_hints, normalize_date_str
+from backend.core.models import DocumentType
+from backend.services.normalizer.validator import extract_identifier_hints, normalize_date_str
 
 _HEADER_CITY_DATE_RE = re.compile(
     r"^(?P<city>[A-ZĄĆĘŁŃÓŚŹŻ][A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż\s\-]{1,40}?)"
@@ -89,6 +89,14 @@ def strip_person_titles(name: str | None) -> str | None:
     return cleaned or None
 
 
+def _clean_single_representative(name: str | None) -> str | None:
+    cleaned = strip_person_titles(name)
+    if cleaned and "," in cleaned:
+        first = cleaned.split(",", 1)[0].strip()
+        return strip_person_titles(first)
+    return cleaned
+
+
 def _entity_keys(entity: dict[str, Any]) -> tuple[set[str], set[str], set[str]]:
     nips = {re.sub(r"\D", "", str(entity["nip"]))} if entity.get("nip") else set()
     krss = {re.sub(r"\D", "", str(entity["krs"]))} if entity.get("krs") else set()
@@ -143,7 +151,7 @@ def _augment_odwolanie(data: dict[str, Any], source_text: str) -> None:
                 continue
             rep = item.get("pelnomocnik")
             if isinstance(rep, dict) and isinstance(rep.get("imie_nazwisko"), str):
-                rep["imie_nazwisko"] = strip_person_titles(rep["imie_nazwisko"])
+                rep["imie_nazwisko"] = _clean_single_representative(rep["imie_nazwisko"])
 
     zamawiajacy = data.get("Zamawiajacy")
     if isinstance(odwolujacy, list) and isinstance(zamawiajacy, list):
@@ -200,15 +208,15 @@ def _augment_pelnomocnictwo(data: dict[str, Any], source_text: str) -> None:
                     person["pesel"] = None
 
 
-def augment_post_extraction(doc_type: DocumentType, data: dict[str, Any], source_text: str) -> dict[str, Any]:
+def augment_post_extraction(doc_type: DocumentType | str, data: dict[str, Any], source_text: str) -> dict[str, Any]:
     """Apply deterministic, zero-token domain augmentation after LLM extraction."""
     if not isinstance(data, dict):
         return {}
     augmented = deepcopy(data)
 
-    if doc_type == DocumentType.ODWOLANIE:
+    if str(doc_type) == DocumentType.ODWOLANIE.value:
         _augment_odwolanie(augmented, source_text)
-    elif doc_type == DocumentType.PELNOMOCNICTWO:
+    elif str(doc_type) == DocumentType.PELNOMOCNICTWO.value:
         _augment_pelnomocnictwo(augmented, source_text)
 
     return augmented

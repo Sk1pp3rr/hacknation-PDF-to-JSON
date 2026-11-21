@@ -11,10 +11,10 @@ import joblib
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.svm import LinearSVC
 
-from backend.schemas import DocumentSegment, DocumentType
+from backend.core.models import DocumentSegment, DocumentType
 
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_MODEL_PATH = REPO_ROOT / "models" / "document_classifier.joblib"
 
 _model: dict[str, Any] | None = None
@@ -24,8 +24,8 @@ CLASS_FILENAMES = {
     "odwolanie.json": DocumentType.ODWOLANIE,
     "pelnomocnictwo": DocumentType.PELNOMOCNICTWO,
     "pelnomocnictwo.json": DocumentType.PELNOMOCNICTWO,
-    "przelew": DocumentType.DOWOD_WPLATY,
-    "przelew.json": DocumentType.DOWOD_WPLATY,
+    "przelew": DocumentType.PRZELEW,
+    "przelew.json": DocumentType.PRZELEW,
 }
 
 FALLBACK_PHRASES = {
@@ -37,7 +37,7 @@ FALLBACK_PHRASES = {
         "pełnomocnictwo", "pełnomocnika", "mocodawca", "pełnomocnik",
         "udzielam pełnomocnictwa", "pełnomocnictwo ogólne",
     ),
-    DocumentType.DOWOD_WPLATY: (
+    DocumentType.PRZELEW: (
         "przelew", "tytuł przelewu", "kwota", "rachunek", "opłata",
         "dowód wpłaty", "numer transakcji",
     ),
@@ -133,8 +133,8 @@ def classify_document(
         mapping = {
             "odwolanie": DocumentType.ODWOLANIE,
             "pelnomocnictwo": DocumentType.PELNOMOCNICTWO,
-            "przelew": DocumentType.DOWOD_WPLATY,
-            "dowod_wplaty": DocumentType.DOWOD_WPLATY,
+            "przelew": DocumentType.PRZELEW,
+            "dowod_wplaty": DocumentType.PRZELEW,
         }
         return mapping.get(label, DocumentType.INNY), score
     except FileNotFoundError:

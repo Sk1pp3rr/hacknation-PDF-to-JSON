@@ -43,6 +43,8 @@ Można wskazać inną gałąź lub katalog docelowy:
 python scripts/download_hacknation_data.py --branch main --target dane
 ```
 
+Skrypt pobiera cały katalog `dane/`, w tym podkatalog `dane/skany/`.
+
 ## Szybki start
 
 ```bash

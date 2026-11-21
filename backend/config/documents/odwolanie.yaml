@@ -1,0 +1,62 @@
+id: "odwolanie"
+nazwa: "Treść odwołania do KIO"
+opis: "Pismo odwoławcze kierowane do Prezesa Krajowej Izby Odwoławczej"
+
+klasyfikacja:
+  filtry_nazw_plikow:
+    - "odwolanie"
+    - "odwolanie.pdf"
+    - "odwolanie.json"
+  frazy_kluczowe:
+    - "odwołanie"
+    - "odwołuje"
+    - "wnoszę o uchylenie"
+    - "krajowa izba odwoławcza"
+    - "czynność zamawiającego"
+    - "odwołujący"
+  prog_pewnosci: 0.62
+
+ekstrakcja:
+  schema_name: "OdwolanieSchema"
+  max_tokens: 850
+  max_chars: 10000
+  exclude_llm_fields:
+    - "czynnosc_opis"
+  force_string_fields: []
+  system_prompt: |
+    Ekstrahujesz dane z polskiego odwołania do KIO do ścisłego JSON.
+  wskazowki:
+    - "Zwracaj null jeśli brak informacji w tekście (nie zgaduj i nie przepisuj wzorców)."
+    - "Daty podawaj w formacie YYYY-MM-DD."
+    - "data i miejscowosc bierz TYLKO z linii nagłówka pierwszej strony (miasto i data pisma); NIE bierz miasta z adresu Prezesa KIO ani daty z treści zarzutu."
+    - "czynnosc_dzien i czynnosc_powod_id ustalaj WYŁĄCZNIE dla pierwszego zarzutu/zaskarżonej czynności."
+    - "Kody czynnosc_powod_id (1-12): {czynnosc_dict}."
+    - "Odwolujacy to WYŁĄCZNIE podmiot z sekcji ODWOŁUJĄCY (nigdy nie dodawaj tam Zamawiającego!); jeśli jest konsorcjum, podaj Lidera; przez-pelnomocnika=1 gdy działa pełnomocnik, inaczej 0."
+    - "pelnomocnik.imie_nazwisko to imię i nazwisko pierwszego pełnomocnika (bez tytułu zawodowego), a pelnomocnik.nazwa to nazwa kancelarii/firmy (np. z adresu do korespondencji), NIE imię i nazwisko."
+    - "numer_bzp podawaj bez spacji (rok, ukośnik, BZP i 8 cyfr); numer_ted jako 6 cyfr, myślnik i rok; jeśli numeru nie ma w tekście, zwróć null."
+  section_swarm:
+    header_max_tokens: 650
+    action_max_tokens: 160
+    header_system_prompt: |
+      Ekstrahujesz WYŁĄCZNIE nagłówek, strony (Odwołujący, Zamawiający) i dane zamówienia publicznego do JSON.
+      Zasady:
+      - Zwracaj null jeśli brak informacji w tekście (nie zgaduj i nie przepisuj wzorców). Daty w formacie YYYY-MM-DD.
+      - data i miejscowosc bierz TYLKO z linii nagłówka pierwszej strony (miasto i data pisma); NIE bierz miasta z adresu sądu/izby ani daty z treści zarzutu.
+      - Odwolujacy to WYŁĄCZNIE podmiot z sekcji ODWOŁUJĄCY (nigdy nie dodawaj tam Zamawiającego!).
+      - pelnomocnik.imie_nazwisko to imię i nazwisko pierwszego pełnomocnika (bez tytułu zawodowego), a pelnomocnik.nazwa to nazwa kancelarii/firmy zatrudniającej pełnomocnika (np. z adresu do korespondencji), NIE imię i nazwisko.
+      - numer_bzp podawaj bez spacji (rok, ukośnik, BZP i 8 cyfr); numer_ted jako 6 cyfr, myślnik i rok; jeśli numeru nie ma w tekście, zwróć null.
+    action_system_prompt: |
+      Ekstrahujesz WYŁĄCZNIE datę czynności (czynnosc_dzien, YYYY-MM-DD lub null) oraz czynnosc_powod_id (liczba 1-12) wyłącznie dla pierwszego zarzutu/zaskarżonej czynności.
+      Ignoruj datę uchwalenia ustawy Pzp (2019-09-11). Szukaj daty czynności Zamawiającego (np. unieważnienia, ogłoszenia, publikacji SWZ) i zapisz ją jako YYYY-MM-DD.
+      Kody czynnosc_powod_id: {czynnosc_dict}.
+
+normalizacja:
+  wymagane_pola:
+    - "OdwolanieKIO.czynnosc_powod_id"
+    - "Odwolujacy"
+    - "Zamawiajacy"
+  formaty:
+    nip: "cyfry_10"
+    krs: "cyfry_10"
+    regon: "cyfry_9_lub_14"
+    daty: "YYYY-MM-DD"

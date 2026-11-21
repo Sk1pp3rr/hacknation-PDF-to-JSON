@@ -8,6 +8,7 @@ from typing import Any
 import httpx
 import pytest
 
+from backend.config import get_all_document_configs, get_repair_prompts
 from backend.schemas import (
     CZYNNOSC_OPIS_BY_ID,
     DocumentSegment,
@@ -16,26 +17,23 @@ from backend.schemas import (
     PelnomocnictwoSchema,
     PrzelewSchema,
 )
-from backend.services.augmenter import (
+from backend.services.extractor import LLMClient, LLMClientError, extract_document, extract_structured_data
+from backend.services.extractor.schema_utils import to_strict_json_schema
+from backend.services.normalizer import (
     annotate_odwolanie_header,
     augment_post_extraction,
     extract_header_city_and_date,
-    strip_kio_addressee,
-    strip_person_titles,
-)
-from backend.services.llm_client import LLMClient, LLMClientError
-from backend.services.llm_extractor import extract_document, extract_structured_data
-from backend.services.pdf_parser import extract_text_from_pdf_file
-from backend.services.schema_utils import to_strict_json_schema
-from backend.services.validator import (
     extract_identifier_hints,
     is_valid_nip,
     is_valid_nrb,
     is_valid_pesel,
     is_valid_regon,
     normalize_payload,
+    strip_kio_addressee,
+    strip_person_titles,
     validate_extraction,
 )
+from backend.services.parser import extract_text_from_pdf_file
 
 
 def _collect_keys(node: Any) -> set[str]:
@@ -765,4 +763,89 @@ def test_deterministic_header_extractor_all_60_training_cases() -> None:
         city, iso_date = extract_header_city_and_date(text)
         assert city == expected["OdwolanieKIO"]["miejscowosc"], f"City mismatch in {pdf_path}"
         assert iso_date == expected["OdwolanieKIO"]["data"], f"Date mismatch in {pdf_path}"
+
+
+def test_yaml_document_configs_and_extensibility(tmp_path: Path) -> None:
+    configs = get_all_document_configs()
+    assert set(configs.keys()) == {"odwolanie", "pelnomocnictwo", "przelew"}
+    assert configs["odwolanie"].ekstrakcja.section_swarm is not None
+    assert "czynnosc_dict" in configs["odwolanie"].ekstrakcja.section_swarm.action_system_prompt
+
+    repair_prompts = get_repair_prompts()
+    assert repair_prompts.surgical_repair_system.strip()
+    assert "{error_lines}" in repair_prompts.surgical_repair_user_template
+    assert "{previous_json}" in repair_prompts.full_repair_user_template
+
+    custom_yaml = tmp_path / "wybor_oferty.yaml"
+    custom_yaml.write_text(
+        """id: "wybor_oferty"
+nazwa: "Informacja o wyborze oferty"
+ekstrakcja:
+  schema_name: "WyborOferty"
+  max_tokens: 200
+  max_chars: 2000
+  system_prompt: "Ekstrahuj nazwę wybranego wykonawcy."
+  json_schema:
+    type: object
+    properties:
+      wykonawca:
+        type: string
+    required:
+      - wykonawca
+    additionalProperties: false
+""",
+        encoding="utf-8",
+    )
+    loaded = get_all_document_configs(tmp_path)
+    assert list(loaded.keys()) == ["wybor_oferty"]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": '{"wykonawca": "Alfa Sp. z o.o."}'}}]},
+        )
+
+    client = LLMClient(api_key="test-key", transport=httpx.MockTransport(handler))
+    res = asyncio.run(
+        extract_document(
+            "wybor_oferty",
+            "Wybrano ofertę Alfa Sp. z o.o.",
+            client=client,
+            config=loaded["wybor_oferty"],
+        )
+    )
+    assert res.valid is True
+    assert res.data == {"wykonawca": "Alfa Sp. z o.o."}
+
+
+def test_bielik_refinements_empty_zamawiajacy_placeholders_and_second_rep() -> None:
+    text = (
+        "Odwołujący: Firma A, NIP: 9999284065\n"
+        "Zamawiający: Urząd X, NIP: 9997518659\n"
+        "pełnomocnik: r. pr. Bartosz Szymanski, adw. Cezary Wierzbicki"
+    )
+    empty_zam = {
+        "OdwolanieKIO": {"data": None, "czynnosc_dzien": None, "czynnosc_powod_id": 1, "miejscowosc": None},
+        "Odwolujacy": [
+            {
+                "nazwa": "Firma A",
+                "nip": "9999284065",
+                "przez-pelnomocnika": 1,
+                "pelnomocnik": {"imie_nazwisko": "Bartosz Szymanski, adw. Cezary Wierzbicki", "nazwa": None, "mail": None},
+            }
+        ],
+        "Zamawiajacy": [],
+        "ZamowieniePubliczne": {"numer_bzp": "YYYY/BZP########", "numer_ted": "NNNNNN-YYYY"},
+    }
+    augmented = augment_post_extraction(DocumentType.ODWOLANIE, empty_zam, text)
+    assert augmented["Odwolujacy"][0]["pelnomocnik"]["imie_nazwisko"] == "Bartosz Szymanski"
+
+    outcome = validate_extraction(DocumentType.ODWOLANIE, augmented, text)
+    assert outcome.valid is False
+    assert "Zamawiajacy" in outcome.failed_fields
+
+    norm_with_placeholder = normalize_payload(DocumentType.ODWOLANIE, augmented)
+    assert norm_with_placeholder["ZamowieniePubliczne"]["numer_bzp"] is None
+    assert norm_with_placeholder["ZamowieniePubliczne"]["numer_ted"] is None
+
 

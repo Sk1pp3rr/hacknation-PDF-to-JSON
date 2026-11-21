@@ -34,7 +34,7 @@ def download_data(repo_root: Path, branch: str, target: Path) -> tuple[int, int]
             REPOSITORY,
             str(clone_dir),
         )
-        run_git("-C", str(clone_dir), "sparse-checkout", "set", "dane")
+        run_git("-C", str(clone_dir), "sparse-checkout", "set", "dane", "dane/skany")
 
         source_dir = clone_dir / "dane"
         if not source_dir.is_dir():

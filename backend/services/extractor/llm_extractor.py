@@ -1,102 +1,42 @@
-"""Token-efficient EU LLM extraction engine with strict schemas, validation, and surgical retry."""
+"""Config-driven EU LLM extraction engine with strict schemas, validation, and surgical retry."""
 
 import asyncio
 from copy import deepcopy
-from dataclasses import dataclass, field
 import json
 import re
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from backend.config import settings
-from backend.schemas import (
+from backend.config import (
+    DocumentConfig,
+    RepairPromptsConfig,
+    get_document_config,
+    get_repair_prompts,
+    settings,
+)
+from backend.core.models import DocumentSegment, DocumentType
+from backend.schemas.uzp import (
     CZYNNOSC_OPIS_BY_ID,
-    DocumentSegment,
-    DocumentType,
-    OdwolanieSchema,
     OdwolujacyItem,
-    PelnomocnictwoSchema,
-    PrzelewSchema,
+    SCHEMA_REGISTRY,
     ZamawiajacyItem,
     ZamowieniePubliczne,
 )
-from backend.services.augmenter import annotate_odwolanie_header, augment_post_extraction
-from backend.services.llm_client import LLMClient, TokenUsage
-from backend.services.schema_utils import to_strict_json_schema
-from backend.services.validator import ValidationOutcome, extract_identifier_hints, validate_extraction
+from backend.services.extractor.llm_client import LLMClient, TokenUsage
+from backend.services.extractor.schema_utils import to_strict_json_schema
+from backend.services.normalizer import (
+    ValidationOutcome,
+    annotate_odwolanie_header,
+    augment_post_extraction,
+    extract_identifier_hints,
+    validate_extraction,
+)
 
 _CZYN_DICT_PROMPT = "; ".join(f"{k}={v}" for k, v in CZYNNOSC_OPIS_BY_ID.items())
+_PROMPT_VARIABLES = {"czynnosc_dict": _CZYN_DICT_PROMPT}
 _SCALAR_JSON_TYPES = {"string", "integer", "number", "boolean"}
-
-
-@dataclass(frozen=True)
-class ExtractionSpec:
-    """Per-document-class extraction settings and token budget."""
-
-    doc_type: DocumentType
-    schema_cls: type[BaseModel]
-    system_prompt: str
-    max_tokens: int
-    max_chars: int
-    exclude_llm_fields: frozenset[str] = field(default_factory=frozenset)
-    force_string_fields: frozenset[str] = field(default_factory=frozenset)
-
-
-EXTRACTION_SPECS: dict[DocumentType, ExtractionSpec] = {
-    DocumentType.ODWOLANIE: ExtractionSpec(
-        doc_type=DocumentType.ODWOLANIE,
-        schema_cls=OdwolanieSchema,
-        system_prompt=(
-            "Ekstrahujesz dane z polskiego odwołania do KIO do ścisłego JSON.\n"
-            "Zasady:\n"
-            "- Zwracaj null jeśli brak informacji w tekście (nie zgaduj).\n"
-            "- Daty podawaj w formacie YYYY-MM-DD.\n"
-            "- data i miejscowosc bierz TYLKO z linii nagłówka pierwszej strony ('<Miasto>, [dnia] <data>'); "
-            "NIE bierz nazwy miasta z adresu Prezesa KIO ani daty z treści zarzutu.\n"
-            "- czynnosc_dzien i czynnosc_powod_id ustalaj WYŁĄCZNIE dla pierwszego zarzutu/zaskarżonej czynności.\n"
-            f"- czynnosc_powod_id (1-12): {_CZYN_DICT_PROMPT}.\n"
-            "- Odwołujący to WYŁĄCZNIE podmiot z sekcji ODWOŁUJĄCY (nigdy nie dodawaj tam Zamawiającego!); "
-            "jeśli jest konsorcjum, podaj Lidera; przez-pelnomocnika=1 gdy działa pełnomocnik, inaczej 0.\n"
-            "- pelnomocnik.imie_nazwisko to imię i nazwisko osoby (bez 'r. pr.'/'adw.'), a pelnomocnik.nazwa to nazwa kancelarii/firmy "
-            "(np. z 'adres do korespondencji'), NIE imię i nazwisko.\n"
-            "- numer_bzp format 'YYYY/BZP########' bez spacji; numer_ted format 'NNNNNN-YYYY'."
-        ),
-        max_tokens=850,
-        max_chars=10000,
-        exclude_llm_fields=frozenset({"czynnosc_opis"}),
-    ),
-    DocumentType.PELNOMOCNICTWO: ExtractionSpec(
-        doc_type=DocumentType.PELNOMOCNICTWO,
-        schema_cls=PelnomocnictwoSchema,
-        system_prompt=(
-            "Ekstrahujesz dane z polskiego pełnomocnictwa do ścisłego JSON.\n"
-            "Zasady:\n"
-            "- Zwracaj null jeśli brak pola (nie zgaduj).\n"
-            "- mocodawca[].data.typ to 'osoba_prawna' lub 'osoba_fizyczna'; dla osoby prawnej imie_nazwisko=null.\n"
-            "- podpisujacy to lista osób podpisujących w imieniu mocodawcy.\n"
-            "- pelnomocnicy[].imie_nazwisko podawaj w mianowniku, bez tytułów (np. bez 'r. pr.').\n"
-            "- pesel to WYŁĄCZNIE 11-cyfrowy numer PESEL (nigdy numer wpisu na listę radców/adwokatów typu WA 93198 — wtedy zwróć null)."
-        ),
-        max_tokens=500,
-        max_chars=6000,
-        force_string_fields=frozenset({"pesel"}),
-    ),
-    DocumentType.PRZELEW: ExtractionSpec(
-        doc_type=DocumentType.PRZELEW,
-        schema_cls=PrzelewSchema,
-        system_prompt=(
-            "Ekstrahujesz dane z potwierdzenia przelewu bankowego do ścisłego JSON.\n"
-            "Zasady:\n"
-            "- Zwracaj null jeśli brak informacji.\n"
-            "- data_operacji w formacie YYYY-MM-DD.\n"
-            "- kwota jako liczba (float), bez waluty.\n"
-            "- z_rachunku i na_rachunek jako same 26 cyfr bez spacji i bez prefiksu 'PL'."
-        ),
-        max_tokens=350,
-        max_chars=4000,
-    ),
-}
+_SCHEMA_BY_NAME: dict[str, type[BaseModel]] = {cls.__name__: cls for cls in SCHEMA_REGISTRY.values()}
 
 
 class _OdwolanieHeaderPayload(BaseModel):
@@ -112,31 +52,10 @@ class _OdwolanieActionPayload(BaseModel):
     czynnosc_powod_id: int = Field(ge=1, le=12)
 
 
-_HEADER_SYSTEM_PROMPT = (
-    "Ekstrahujesz WYŁĄCZNIE nagłówek, strony (Odwołujący, Zamawiający) i dane zamówienia publicznego do JSON.\n"
-    "Zasady:\n"
-    "- Zwracaj null jeśli brak informacji. Daty w formacie YYYY-MM-DD.\n"
-    "- data i miejscowosc bierz TYLKO z linii nagłówka pierwszej strony ('<Miasto>, [dnia] <data>'); "
-    "NIE bierz miasta z adresu sądu/izby ani daty z treści zarzutu.\n"
-    "- Odwolujacy to WYŁĄCZNIE podmiot z sekcji ODWOŁUJĄCY (nigdy nie dodawaj tam Zamawiającego!).\n"
-    "- pelnomocnik.imie_nazwisko to imię i nazwisko osoby (bez tytułu 'r. pr.'/'adw.'), a pelnomocnik.nazwa to nazwa "
-    "kancelarii/firmy zatrudniającej pełnomocnika (np. z 'adres do korespondencji'), NIE imię i nazwisko.\n"
-    "- numer_bzp bez spacji ('YYYY/BZP########'), numer_ted jako 'NNNNNN-YYYY'."
-)
-
-_ACTION_SYSTEM_PROMPT = (
-    "Ekstrahujesz WYŁĄCZNIE datę czynności (czynnosc_dzien, YYYY-MM-DD lub null) "
-    "oraz czynnosc_powod_id (liczba 1-12) wyłącznie dla pierwszego zarzutu/zaskarżonej czynności.\n"
-    "Ignoruj datę uchwalenia ustawy Pzp (2019-09-11). Szukaj daty czynności Zamawiającego "
-    "(np. unieważnienia, ogłoszenia, publikacji SWZ) i zapisz ją jako YYYY-MM-DD.\n"
-    f"Kody czynnosc_powod_id: {_CZYN_DICT_PROMPT}."
-)
-
-
 class DocumentExtractionOutcome(BaseModel):
     """Full extraction result including validation status and token telemetry."""
 
-    doc_type: DocumentType
+    doc_type: DocumentType | str
     valid: bool
     data: dict[str, Any] = Field(default_factory=dict)
     usage: TokenUsage = Field(default_factory=TokenUsage)
@@ -144,6 +63,32 @@ class DocumentExtractionOutcome(BaseModel):
     validation_errors: list[str] = Field(default_factory=list)
     validation_warnings: list[str] = Field(default_factory=list)
     mode: str = "single"
+
+
+def _render_template(template: str, variables: dict[str, str]) -> str:
+    rendered = template.strip()
+    for key, value in variables.items():
+        rendered = rendered.replace(f"{{{key}}}", value)
+    return rendered
+
+
+def _resolve_strict_schema(cfg: DocumentConfig) -> dict[str, Any] | None:
+    schema_cls = _SCHEMA_BY_NAME.get(cfg.ekstrakcja.schema_name)
+    if schema_cls is None:
+        try:
+            schema_cls = SCHEMA_REGISTRY.get(DocumentType(cfg.id))
+        except ValueError:
+            schema_cls = None
+
+    if schema_cls is not None:
+        return to_strict_json_schema(
+            schema_cls,
+            exclude_fields=set(cfg.ekstrakcja.exclude_llm_fields),
+            force_string_fields=set(cfg.ekstrakcja.force_string_fields),
+        )
+    if cfg.ekstrakcja.json_schema is not None:
+        return deepcopy(cfg.ekstrakcja.json_schema)
+    return None
 
 
 def _clean_text(text: str, max_chars: int) -> str:
@@ -208,7 +153,8 @@ def _build_user_message(text: str, *, include_hints: bool) -> str:
 
 
 def _build_repair_messages(
-    spec: ExtractionSpec,
+    system_prompt: str,
+    repair_prompts: RepairPromptsConfig,
     pruned_text: str,
     previous_payload: dict[str, Any],
     errors: list[str],
@@ -222,19 +168,15 @@ def _build_repair_messages(
             hints_block = f"\nWykryte kandydaty w dokumencie:\n{hints.format_compact()}\n"
 
     error_lines = "\n".join(f"- {err}" for err in errors[:8])
+    user_content = repair_prompts.full_repair_user_template.format(
+        error_lines=error_lines,
+        hints_block=hints_block,
+        previous_json=json.dumps(previous_payload, ensure_ascii=False),
+        text_slice=pruned_text[:6000],
+    )
     return [
-        {"role": "system", "content": spec.system_prompt},
-        {
-            "role": "user",
-            "content": (
-                "Poprzedni JSON zawiera błędy walidacji względem schematu lub tekstu źródłowego:\n"
-                f"{error_lines}\n"
-                f"{hints_block}\n"
-                f"POPRZEDNI JSON:\n{json.dumps(previous_payload, ensure_ascii=False)}\n\n"
-                f"FRAGMENT DOKUMENTU:\n{pruned_text[:6000]}\n\n"
-                "Zwróć wyłącznie poprawiony kompletny JSON."
-            ),
-        },
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_content},
     ]
 
 
@@ -338,7 +280,8 @@ def _make_safe_key(field_path: str) -> str:
 
 
 def _build_surgical_patch_plan(
-    doc_type: DocumentType,
+    doc_type: DocumentType | str,
+    repair_prompts: RepairPromptsConfig,
     strict_schema: dict[str, Any],
     outcome_data: dict[str, Any],
     failed_fields: list[str],
@@ -373,7 +316,9 @@ def _build_surgical_patch_plan(
         "additionalProperties": False,
     }
 
-    if doc_type == DocumentType.ODWOLANIE and all(p.startswith("OdwolanieKIO.czynnosc_") for p in failed_fields):
+    if str(doc_type) == DocumentType.ODWOLANIE.value and all(
+        p.startswith("OdwolanieKIO.czynnosc_") for p in failed_fields
+    ):
         text_slice = split_odwolanie_sections(pruned_text)[1]
     else:
         text_slice = pruned_text[:4500]
@@ -388,31 +333,24 @@ def _build_surgical_patch_plan(
 
     key_map_lines = "\n".join(f"- {k} -> {p}" for k, p in key_to_path.items())
     error_lines = "\n".join(f"- {err}" for err in errors[:6])
+    user_content = repair_prompts.surgical_repair_user_template.format(
+        error_lines=error_lines,
+        key_map_lines=key_map_lines,
+        current_values=json.dumps(current_values, ensure_ascii=False),
+        hints_block=hints_block,
+        text_slice=text_slice,
+    )
     messages = [
-        {
-            "role": "system",
-            "content": (
-                "Poprawiasz WYŁĄCZNIE wskazane błędne pola JSON na podstawie fragmentu dokumentu. "
-                "Nie wymyślaj danych nieobecnych w tekście; daty zapisuj w formacie YYYY-MM-DD."
-            ),
-        },
-        {
-            "role": "user",
-            "content": (
-                f"Błędy walidacji:\n{error_lines}\n\n"
-                f"Mapowanie kluczy patcha:\n{key_map_lines}\n\n"
-                f"Błędne wartości obecnie:\n{json.dumps(current_values, ensure_ascii=False)}\n"
-                f"{hints_block}\n"
-                f"FRAGMENT DOKUMENTU:\n{text_slice}\n\n"
-                "Zwróć wyłącznie JSON z poprawionymi kluczami."
-            ),
-        },
+        {"role": "system", "content": repair_prompts.surgical_repair_system.strip()},
+        {"role": "user", "content": user_content},
     ]
     return patch_schema, key_to_path, messages
 
 
 async def _run_single_shot(
-    spec: ExtractionSpec,
+    doc_id: str,
+    system_prompt: str,
+    max_tokens: int,
     pruned_text: str,
     strict_schema: dict[str, Any],
     client: LLMClient,
@@ -420,32 +358,39 @@ async def _run_single_shot(
     include_hints: bool,
 ) -> tuple[dict[str, Any], list[str], TokenUsage, int]:
     messages = [
-        {"role": "system", "content": spec.system_prompt},
+        {"role": "system", "content": system_prompt},
         {"role": "user", "content": _build_user_message(pruned_text, include_hints=include_hints)},
     ]
     res = await client.complete_json(
         messages=messages,
-        schema_name=f"{spec.doc_type.value}_extraction",
+        schema_name=f"{doc_id}_extraction",
         json_schema=strict_schema,
-        max_tokens=spec.max_tokens,
+        max_tokens=max_tokens,
     )
     parsed, parse_errors = _parse_json_content(res.content)
     return parsed, parse_errors, res.usage, 1
 
 
 async def _run_odwolanie_section_swarm(
+    cfg: DocumentConfig,
     pruned_text: str,
     client: LLMClient,
     *,
     include_hints: bool,
 ) -> tuple[dict[str, Any], list[str], TokenUsage, int]:
+    swarm_cfg = cfg.ekstrakcja.section_swarm
+    assert swarm_cfg is not None
+
     header_slice, action_slice = split_odwolanie_sections(pruned_text)
     header_schema = to_strict_json_schema(_OdwolanieHeaderPayload)
     action_schema = to_strict_json_schema(_OdwolanieActionPayload)
 
+    header_system_prompt = _render_template(swarm_cfg.header_system_prompt, _PROMPT_VARIABLES)
+    action_system_prompt = _render_template(swarm_cfg.action_system_prompt, _PROMPT_VARIABLES)
+
     annotated_header = annotate_odwolanie_header(header_slice)
     header_msgs = [
-        {"role": "system", "content": _HEADER_SYSTEM_PROMPT},
+        {"role": "system", "content": header_system_prompt},
         {"role": "user", "content": f"TEKST DOKUMENTU:\n{annotated_header}"},
     ]
 
@@ -459,7 +404,7 @@ async def _run_odwolanie_section_swarm(
                 f"{action_user_content}"
             )
     action_msgs = [
-        {"role": "system", "content": _ACTION_SYSTEM_PROMPT},
+        {"role": "system", "content": action_system_prompt},
         {"role": "user", "content": action_user_content},
     ]
 
@@ -468,13 +413,13 @@ async def _run_odwolanie_section_swarm(
             messages=header_msgs,
             schema_name="odwolanie_header",
             json_schema=header_schema,
-            max_tokens=650,
+            max_tokens=swarm_cfg.header_max_tokens,
         ),
         client.complete_json(
             messages=action_msgs,
             schema_name="odwolanie_action",
             json_schema=action_schema,
-            max_tokens=160,
+            max_tokens=swarm_cfg.action_max_tokens,
         ),
     )
 
@@ -496,22 +441,27 @@ async def _run_odwolanie_section_swarm(
     return merged, [*header_errors, *action_errors], total_usage, 2
 
 
-def _augment_and_validate(doc_type: DocumentType, raw_payload: dict[str, Any], pruned_text: str) -> ValidationOutcome:
+def _augment_and_validate(
+    doc_type: DocumentType | str,
+    raw_payload: dict[str, Any],
+    pruned_text: str,
+) -> ValidationOutcome:
     augmented = augment_post_extraction(doc_type, raw_payload, pruned_text)
     return validate_extraction(doc_type, augmented, pruned_text)
 
 
 async def extract_document(
-    doc_type: DocumentType,
+    doc_type: DocumentType | str,
     text: str,
     *,
     client: LLMClient | None = None,
     mode: Literal["single", "section_swarm"] | None = None,
     max_retries: int | None = None,
     include_hints: bool = True,
+    config: DocumentConfig | None = None,
 ) -> DocumentExtractionOutcome:
-    """Extract canonical UZP JSON for one classified document with external validation."""
-    if doc_type == DocumentType.INNY or not text.strip() or doc_type not in EXTRACTION_SPECS:
+    """Extract canonical JSON for one classified document using YAML configuration."""
+    if str(doc_type) == DocumentType.INNY.value or not text.strip():
         return DocumentExtractionOutcome(
             doc_type=doc_type,
             valid=True,
@@ -521,29 +471,56 @@ async def extract_document(
             mode="skipped",
         )
 
-    spec = EXTRACTION_SPECS[doc_type]
+    if config is not None:
+        cfg = config
+    else:
+        try:
+            cfg = get_document_config(doc_type)
+        except KeyError:
+            return DocumentExtractionOutcome(
+                doc_type=doc_type,
+                valid=True,
+                data={},
+                usage=TokenUsage(),
+                attempts=0,
+                mode="skipped",
+            )
+
+    strict_schema = _resolve_strict_schema(cfg)
+    if strict_schema is None:
+        return DocumentExtractionOutcome(
+            doc_type=doc_type,
+            valid=True,
+            data={},
+            usage=TokenUsage(),
+            attempts=0,
+            mode="skipped",
+        )
+
     active_client = client or LLMClient()
-    active_mode = mode or settings.llm_extraction_mode
-    if doc_type != DocumentType.ODWOLANIE:
-        active_mode = "single"
+    requested_mode = mode or settings.llm_extraction_mode
+    active_mode = (
+        "section_swarm"
+        if requested_mode == "section_swarm" and cfg.ekstrakcja.section_swarm is not None
+        else "single"
+    )
     retries_allowed = settings.llm_max_retries if max_retries is None else max_retries
 
-    pruned_text = _clean_text(text, max_chars=spec.max_chars)
-    strict_schema = to_strict_json_schema(
-        spec.schema_cls,
-        exclude_fields=set(spec.exclude_llm_fields),
-        force_string_fields=set(spec.force_string_fields),
-    )
+    system_prompt = cfg.ekstrakcja.render_system_prompt(_PROMPT_VARIABLES)
+    pruned_text = _clean_text(text, max_chars=cfg.ekstrakcja.max_chars)
 
     if active_mode == "section_swarm":
         raw_payload, parse_errors, total_usage, attempts = await _run_odwolanie_section_swarm(
+            cfg,
             pruned_text,
             active_client,
             include_hints=include_hints,
         )
     else:
         raw_payload, parse_errors, total_usage, attempts = await _run_single_shot(
-            spec,
+            cfg.id,
+            system_prompt,
+            cfg.ekstrakcja.max_tokens,
             pruned_text,
             strict_schema,
             active_client,
@@ -564,15 +541,19 @@ async def extract_document(
         failed_fields = validation.failed_fields
         is_valid = validation.valid
 
+    repair_prompts: RepairPromptsConfig | None = None
     for _ in range(max(0, retries_allowed)):
         if is_valid:
             break
+        if repair_prompts is None:
+            repair_prompts = get_repair_prompts()
 
         patch_plan = (
             None
             if parse_errors
             else _build_surgical_patch_plan(
                 doc_type,
+                repair_prompts,
                 strict_schema,
                 outcome_data,
                 failed_fields,
@@ -586,7 +567,7 @@ async def extract_document(
             patch_schema, key_to_path, repair_msgs = patch_plan
             repair_res = await active_client.complete_json(
                 messages=repair_msgs,
-                schema_name=f"{doc_type.value}_patch",
+                schema_name=f"{cfg.id}_patch",
                 json_schema=patch_schema,
                 max_tokens=min(240, 80 * len(failed_fields) + 60),
             )
@@ -613,7 +594,8 @@ async def extract_document(
             is_valid = validation.valid
         else:
             repair_msgs = _build_repair_messages(
-                spec,
+                system_prompt,
+                repair_prompts,
                 pruned_text,
                 outcome_data,
                 errors,
@@ -621,9 +603,9 @@ async def extract_document(
             )
             repair_res = await active_client.complete_json(
                 messages=repair_msgs,
-                schema_name=f"{doc_type.value}_repair",
+                schema_name=f"{cfg.id}_repair",
                 json_schema=strict_schema,
-                max_tokens=spec.max_tokens,
+                max_tokens=cfg.ekstrakcja.max_tokens,
             )
             total_usage = total_usage + repair_res.usage
             attempts += 1

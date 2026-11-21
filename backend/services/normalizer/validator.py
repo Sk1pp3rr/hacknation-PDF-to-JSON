@@ -8,7 +8,8 @@ from typing import Any, Callable, Iterable
 from pydantic import BaseModel, Field, ValidationError
 
 from backend.config import settings
-from backend.schemas import CZYNNOSC_OPIS_BY_ID, SCHEMA_REGISTRY, DocumentType
+from backend.core.models import DocumentType
+from backend.schemas.uzp import CZYNNOSC_OPIS_BY_ID, SCHEMA_REGISTRY
 
 _NULL_PLACEHOLDERS = {"", "null", "none", "brak", "n/a", "-"}
 
@@ -44,6 +45,15 @@ _DATE_DMY_RE = re.compile(r"\b(\d{1,2}\.\d{1,2}\.\d{4})\b")
 _DATE_PL_RE = re.compile(
     r"(?i)\b(\d{1,2}\s+(?:stycznia|lutego|marca|kwietnia|maja|czerwca|lipca|sierpnia|wrze[sś]nia|pa[zź]dziernika|listopada|grudnia)\s+\d{4}(?:\s*(?:r\.?|roku))?)\b"
 )
+
+
+def _coerce_doc_type(doc_type: DocumentType | str) -> DocumentType | None:
+    if isinstance(doc_type, DocumentType):
+        return doc_type
+    try:
+        return DocumentType(str(doc_type))
+    except ValueError:
+        return None
 
 
 def _dedupe(items: Iterable[str]) -> list[str]:
@@ -266,14 +276,19 @@ def _clean_placeholders(node: Any) -> Any:
     return node
 
 
+def _is_pattern_placeholder(value: str) -> bool:
+    upper = value.upper()
+    return "YYYY" in upper or "####" in upper or "NNNNNN" in upper
+
+
 def _normalize_bzp(value: Any) -> str | None:
-    if not isinstance(value, str):
+    if not isinstance(value, str) or _is_pattern_placeholder(value):
         return None
     return re.sub(r"\s+", "", value).upper()
 
 
 def _normalize_ted(value: Any) -> str | None:
-    if not isinstance(value, str):
+    if not isinstance(value, str) or _is_pattern_placeholder(value):
         return None
     cleaned = re.sub(r"\s+", " ", value).strip()
     m_oj = re.match(r"(?i)^(\d{4})/S\s*\d{1,3}-(\d{6})$", cleaned)
@@ -367,7 +382,7 @@ def _normalize_pelnomocnictwo(data: dict[str, Any]) -> None:
                 person["pesel"] = _digits_only(person["pesel"])
 
 
-def normalize_payload(doc_type: DocumentType, raw: dict[str, Any]) -> dict[str, Any]:
+def normalize_payload(doc_type: DocumentType | str, raw: dict[str, Any]) -> dict[str, Any]:
     """Deterministically clean placeholders, identifiers, dates, and derived fields."""
     if not isinstance(raw, dict):
         return {}
@@ -375,11 +390,12 @@ def normalize_payload(doc_type: DocumentType, raw: dict[str, Any]) -> dict[str, 
     if not isinstance(data, dict):
         return {}
 
-    if doc_type == DocumentType.PRZELEW:
+    dt = _coerce_doc_type(doc_type)
+    if dt == DocumentType.PRZELEW:
         _normalize_przelew(data)
-    elif doc_type == DocumentType.ODWOLANIE:
+    elif dt == DocumentType.ODWOLANIE:
         _normalize_odwolanie(data)
-    elif doc_type == DocumentType.PELNOMOCNICTWO:
+    elif dt == DocumentType.PELNOMOCNICTWO:
         _normalize_pelnomocnictwo(data)
 
     return data
@@ -503,6 +519,14 @@ def _run_grounding_checks(
         _check_iso_date("OdwolanieKIO.data", kio.get("data"), findings)
         _check_iso_date("OdwolanieKIO.czynnosc_dzien", kio.get("czynnosc_dzien"), findings)
 
+        if not (data.get("Zamawiajacy") or []):
+            findings.append(
+                (
+                    "Zamawiajacy",
+                    "Zamawiajacy nie może być pustą listą — każde odwołanie do KIO ma co najmniej jednego Zamawiającego",
+                )
+            )
+
         for section_name in ("Odwolujacy", "Zamawiajacy"):
             for idx, entity in enumerate(data.get(section_name) or []):
                 _check_identifier_field(
@@ -603,7 +627,7 @@ def _run_grounding_checks(
 
 
 def validate_extraction(
-    doc_type: DocumentType,
+    doc_type: DocumentType | str,
     raw: dict[str, Any],
     source_text: str,
     *,
@@ -611,8 +635,9 @@ def validate_extraction(
 ) -> ValidationOutcome:
     """Normalize LLM output, validate against Pydantic UZP schema, and verify grounding."""
     normalized = normalize_payload(doc_type, raw)
-    schema_cls = SCHEMA_REGISTRY.get(doc_type)
-    if schema_cls is None:
+    dt = _coerce_doc_type(doc_type)
+    schema_cls = SCHEMA_REGISTRY.get(dt) if dt is not None else None
+    if dt is None or schema_cls is None:
         return ValidationOutcome(valid=True, data=normalized)
 
     try:
@@ -634,7 +659,7 @@ def validate_extraction(
     hints = extract_identifier_hints(source_text)
     use_strict = settings.llm_strict_checksums if strict_checksums is None else strict_checksums
     grounding_findings, warnings = _run_grounding_checks(
-        doc_type,
+        dt,
         dumped,
         source_text,
         hints,

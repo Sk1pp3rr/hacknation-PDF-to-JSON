@@ -1,5 +1,6 @@
 """Application configuration loaded from environment variables."""
 
+from pathlib import Path
 from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -18,6 +19,8 @@ class Settings(BaseSettings):
     llm_use_strict_schema: bool = True
     llm_strict_checksums: bool = False
     llm_extraction_mode: Literal["single", "section_swarm"] = "section_swarm"
+    documents_config_dir: Path = Path(__file__).resolve().parent / "documents"
+    prompts_config_path: Path = Path(__file__).resolve().parent / "prompts.yaml"
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
