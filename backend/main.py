@@ -6,14 +6,21 @@ import time
 from typing import Any
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 
 from backend.config import settings
 from backend.core.models import ExtractionResult
 from backend.services.classifier import classify_and_segment, classify_document
 from backend.services.extractor import LLMClientError, extract_document, extract_structured_data
-from backend.services.parser import parse_pdf
+from backend.services.parser import parse_pdf, render_pdf_explorer_data
 
 app = FastAPI(title=settings.app_name, version="0.1.0")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.get("/health")
@@ -52,7 +59,12 @@ async def _process_uploaded_pdf(filename: str, content: bytes) -> dict[str, Any]
     except LLMClientError as exc:
         raise HTTPException(status_code=502, detail=f"Błąd API LLM: {exc}") from exc
     elapsed = time.perf_counter() - t0
-    raw_evidence = getattr(outcome, "evidence", None) or []
+    raw_evidence = list(getattr(outcome, "evidence", None) or [])
+    page_images, evidence_with_rects = await asyncio.to_thread(
+        render_pdf_explorer_data,
+        content,
+        raw_evidence,
+    )
 
     return {
         "filename": filename,
@@ -67,8 +79,10 @@ async def _process_uploaded_pdf(filename: str, content: bytes) -> dict[str, Any]
             "elapsed_seconds": round(elapsed, 2),
             "text_length": len(parsed.text),
             "page_count": parsed.page_count,
+            "pages": parsed.pages,
+            "page_images": page_images,
             "usage": outcome.usage.model_dump(),
-            "evidence": [ev.model_dump() for ev in raw_evidence],
+            "evidence": evidence_with_rects,
             "validation_errors": outcome.validation_errors,
             "validation_warnings": outcome.validation_warnings,
         },
