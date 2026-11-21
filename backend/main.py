@@ -3,9 +3,9 @@
 from fastapi import FastAPI, File, UploadFile
 
 from backend.config import settings
-from backend.schemas import ExtractionResult
+from backend.core.models import ExtractionResult
 from backend.services.classifier import classify_and_segment
-from backend.services.llm_extractor import extract_structured_data
+from backend.services.extractor import extract_structured_data
 
 app = FastAPI(title=settings.app_name, version="0.1.0")
 
