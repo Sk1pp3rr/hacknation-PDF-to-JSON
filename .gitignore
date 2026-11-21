@@ -23,3 +23,6 @@ data/
 !tests/fixtures/*.pdf
 !dane/
 !dane/**
+
+# Generated classifier artifacts
+models/*.joblib
