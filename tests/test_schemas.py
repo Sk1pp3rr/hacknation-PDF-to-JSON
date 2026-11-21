@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 import pytest
 from backend.schemas import OdwolanieSchema, PelnomocnictwoSchema, PrzelewSchema
-DATA_DIR = Path("data/uzp-hacknation-2026/dane")
+DATA_DIR = Path("dane") if Path("dane").exists() else Path("data/uzp-hacknation-2026/dane")
 @pytest.mark.skipif(not DATA_DIR.exists(), reason="UZP training dataset not cloned locally")
 @pytest.mark.parametrize(
     ("filename", "model_cls"),

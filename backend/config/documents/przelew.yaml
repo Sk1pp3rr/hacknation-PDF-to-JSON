@@ -1,0 +1,41 @@
+id: "przelew"
+nazwa: "Potwierdzenie przelewu / dowód wpłaty"
+opis: "Bankowe potwierdzenie wykonania przelewu opłaty skarbowej lub wpisu od odwołania"
+
+klasyfikacja:
+  filtry_nazw_plikow:
+    - "przelew"
+    - "przelew.pdf"
+    - "przelew.json"
+    - "potwierdzenie_przelewu.pdf"
+  frazy_kluczowe:
+    - "przelew"
+    - "tytuł przelewu"
+    - "kwota"
+    - "rachunek"
+    - "opłata"
+    - "dowód wpłaty"
+    - "numer transakcji"
+  prog_pewnosci: 0.62
+
+ekstrakcja:
+  schema_name: "PrzelewSchema"
+  max_tokens: 350
+  max_chars: 4000
+  exclude_llm_fields: []
+  force_string_fields: []
+  system_prompt: |
+    Ekstrahujesz dane z potwierdzenia przelewu bankowego do ścisłego JSON.
+  wskazowki:
+    - "Zwracaj null jeśli brak informacji."
+    - "data_operacji w formacie YYYY-MM-DD."
+    - "kwota jako liczba (float), bez waluty."
+    - "z_rachunku i na_rachunek jako same 26 cyfr bez spacji i bez prefiksu 'PL'."
+
+normalizacja:
+  wymagane_pola:
+    - "przelew_bankowy"
+  formaty:
+    z_rachunku: "cyfry_26"
+    na_rachunek: "cyfry_26"
+    daty: "YYYY-MM-DD"

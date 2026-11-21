@@ -1,0 +1,32 @@
+# Wspólne prompty naprawcze (wykorzystywane wyłącznie przy błędach walidatora)
+
+surgical_repair_system: >
+  Poprawiasz WYŁĄCZNIE wskazane błędne pola JSON na podstawie fragmentu dokumentu.
+  Nie wymyślaj danych nieobecnych w tekście; daty zapisuj w formacie YYYY-MM-DD.
+
+surgical_repair_user_template: |
+  Błędy walidacji:
+  {error_lines}
+
+  Mapowanie kluczy patcha:
+  {key_map_lines}
+
+  Błędne wartości obecnie:
+  {current_values}
+  {hints_block}
+  FRAGMENT DOKUMENTU:
+  {text_slice}
+
+  Zwróć wyłącznie JSON z poprawionymi kluczami.
+
+full_repair_user_template: |
+  Poprzedni JSON zawiera błędy walidacji względem schematu lub tekstu źródłowego:
+  {error_lines}
+  {hints_block}
+  POPRZEDNI JSON:
+  {previous_json}
+
+  FRAGMENT DOKUMENTU:
+  {text_slice}
+
+  Zwróć wyłącznie poprawiony kompletny JSON.
