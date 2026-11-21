@@ -1,6 +1,6 @@
 """EU LLM API client for structured JSON extraction."""
 
-from backend.schemas import DocumentSegment
+from backend.core.models import DocumentSegment
 
 
 async def extract_structured_data(segments: list[DocumentSegment]) -> dict:

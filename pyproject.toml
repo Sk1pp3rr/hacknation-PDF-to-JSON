@@ -27,4 +27,14 @@ pythonpath = ["."]
 testpaths = ["tests"]
 
 [tool.setuptools]
-packages = ["backend", "backend.services"]
+packages = [
+    "backend",
+    "backend.config",
+    "backend.core",
+    "backend.schemas",
+    "backend.services",
+    "backend.services.parser",
+    "backend.services.classifier",
+    "backend.services.extractor",
+    "backend.services.normalizer",
+]
