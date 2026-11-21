@@ -15,6 +15,12 @@ Projekt oparty na komponentach Open Source oraz europejskim API LLM (np. Mistral
 │       ├── pdf_parser.py    # Parsowanie i podział plików PDF
 │       ├── classifier.py    # Klasyfikacja i segmentacja dokumentów
 │       └── llm_extractor.py # Ekstrakcja danych przez europejskie API LLM
+├── ocr/                     # Samodzielny moduł OCR (pypdfium2 + Tesseract pol)
+│   ├── __init__.py          # Eksportuje extract_pages(pdf_path)
+│   ├── engine.py            # OcrEngine (ABC) + TesseractEngine
+│   ├── pdf.py               # Warstwa tekstowa, renderowanie, extract_pages
+│   ├── __main__.py          # CLI: python -m ocr <plik.pdf>
+│   └── README.md            # Dokumentacja modułu OCR, instalacja, licencje
 ├── frontend/
 │   └── app.py               # Interfejs webowy (Streamlit)
 ├── dane/
@@ -76,8 +82,22 @@ npm run dev                            # http://localhost:5173 (proxy /api -> :8
 
 Testy:
 ```bash
-pytest
+pytest tests/test_ocr.py
 ```
+
+## Ekstrakcja tekstu i OCR (`ocr`)
+
+Moduł do ekstrakcji surowego tekstu z wielostronicowych PDF-ów (pisma UZP / KIO):
+
+```bash
+# Uruchomienie CLI (zwraca JSON z polskimi znakami):
+python -m ocr dane/przyklad_01/odwolanie.pdf
+
+# Użycie z poziomu Pythona:
+# from ocr import extract_pages
+# pages = extract_pages("plik.pdf")  # {"page_1": "...", ...}
+```
+Więcej informacji, instrukcje instalacji Tesseracta oraz opis konfiguracji: [ocr/README.md](file:///c:/Users/pawel/Desktop/hackaton_2026/hacknation-PDF-to-JSON/ocr/README.md).
 
 ## Klasyfikacja dokumentów
 
