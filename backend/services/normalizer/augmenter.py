@@ -36,6 +36,15 @@ _REP_ANCHOR_RE = re.compile(
     r"(?i)(?:reprezentowan[ay]\s+przez|adres\s+do\s+korespondencji|pe[łl]nomocnik)"
 )
 _REP_STOP_RE = re.compile(r"(?i)\b(?:Zamawiaj[ąa]cy|Wykonawca\s+wybrany|dotyczy)\b")
+_LAWYER_NAME_RE = re.compile(
+    r"(?i)(?:r\.\s*pr\.|radc[aęy]\s+prawn(?:ego|ym|y)|adw\.|adwokat(?:a|owi)?)\s+"
+    r"([A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]+\s+[A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż\-]+)"
+)
+_DOTS_LINE_RE = re.compile(r"^[\.\s_…]{5,}$")
+_COMPANY_NAME_RE = re.compile(
+    r"([A-ZĄĆĘŁŃÓŚŹŻ][A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż0-9\-\s\.]{2,60}?"
+    r"(?:S\.A\.|sp\.\s*z\s*o\.o\.(?:\s*sp\.\s*k\.)?|sp\.\s*[kj]\.))"
+)
 
 _HEADER_CITY_DATE_RE = re.compile(
     r"^(?P<city>[A-ZĄĆĘŁŃÓŚŹŻ][A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż\s\-]{1,40}?)"
@@ -237,9 +246,40 @@ def _fill_missing_entity_ids(entity: dict[str, Any], text: str, *, include_regon
         entity["regon"] = regon
 
 
+def _extract_signers_from_lines(lines: list[str]) -> list[dict[str, str]]:
+    signers: list[dict[str, str]] = []
+    idx = 0
+    while idx < len(lines):
+        if _DOTS_LINE_RE.match(lines[idx]):
+            while idx < len(lines) and (_DOTS_LINE_RE.match(lines[idx]) or lines[idx].lower().startswith("za ")):
+                idx += 1
+            if idx < len(lines):
+                cleaned = strip_person_titles(lines[idx]) or lines[idx]
+                signers.append({"imie_nazwisko": cleaned})
+        idx += 1
+    return signers
+
+
+def _extract_first_company_name(text: str) -> str | None:
+    t_top = re.split(r"(?i)prowadzonym\s+przez|Zamawiaj[ąa]cy", text)[0]
+    m = _COMPANY_NAME_RE.search(t_top)
+    if not m:
+        return None
+    found = re.sub(r"\s+", " ", m.group(1)).strip()
+    found = re.sub(
+        r"(?i)^(?:.*?:\s*|.*?\b(?:PE[ŁL]NOMOCNICTWO(?:\s+PROCESOWE)?|P\s*E\s*[ŁL]\s*N\s*O\s*M\s*O\s*C\s*N\s*I\s*C\s*T\s*W\s*O|"
+        r"Mocodawc[ąa]\s+jest|Mocodawca|w\s+imieniu|reprezentacji)\s+)",
+        "",
+        found,
+    ).strip()
+    return found or None
+
+
 def _augment_odwolanie(data: dict[str, Any], source_text: str) -> None:
     header_text = _header_slice_only(source_text)
     rep_mail = _extract_representative_mail(header_text)
+    m_lawyer = _LAWYER_NAME_RE.search(header_text)
+    header_lawyer = re.sub(r"\s+", " ", m_lawyer.group(1)).strip() if m_lawyer else None
 
     odwolujacy = data.get("Odwolujacy")
     if isinstance(odwolujacy, list):
@@ -252,6 +292,8 @@ def _augment_odwolanie(data: dict[str, Any], source_text: str) -> None:
                 rep.setdefault("mail", None)
                 if isinstance(rep.get("imie_nazwisko"), str):
                     rep["imie_nazwisko"] = _clean_single_representative(rep["imie_nazwisko"])
+                if header_lawyer and (not rep.get("imie_nazwisko") or rep.get("imie_nazwisko") not in header_text):
+                    rep["imie_nazwisko"] = header_lawyer
                 raw_mail = rep.get("mail")
                 if raw_mail is None and rep_mail is not None:
                     rep["mail"] = rep_mail
@@ -307,13 +349,51 @@ def _augment_odwolanie(data: dict[str, Any], source_text: str) -> None:
 
 def _augment_pelnomocnictwo(data: dict[str, Any], source_text: str) -> None:
     hints = extract_identifier_hints(source_text)
+    t_main = re.split(r"(?im)^\s*Pe[łl]nomocnictwo\s+przyjmuj[ęe]", source_text)[0]
+    found_lawyers = list(
+        dict.fromkeys(re.sub(r"\s+", " ", m.group(1)).strip() for m in _LAWYER_NAME_RE.finditer(t_main))
+    )
+    if found_lawyers:
+        cur_peln = [
+            strip_person_titles(p.get("imie_nazwisko"))
+            for p in (data.get("pelnomocnicy") or [])
+            if isinstance(p, dict) and isinstance(p.get("imie_nazwisko"), str)
+        ]
+        if cur_peln != found_lawyers:
+            data["pelnomocnicy"] = [{"imie_nazwisko": name, "pesel": None} for name in found_lawyers]
+
     mocodawcy = data.get("mocodawca")
     if isinstance(mocodawcy, list):
+        if len(mocodawcy) == 1 and isinstance(mocodawcy[0], dict):
+            lines = [ln.strip() for ln in t_main.splitlines() if ln.strip()]
+            signers = _extract_signers_from_lines(lines)
+            if signers:
+                mocodawcy[0]["podpisujacy"] = signers
+        elif len(mocodawcy) > 1:
+            chunks = re.split(r"(?im)^\s*W\s+imieniu\s+", t_main)[1:]
+            if len(chunks) == len(mocodawcy):
+                for ch, entry in zip(chunks, mocodawcy):
+                    if isinstance(entry, dict):
+                        c_lines = [ln.strip() for ln in ch.splitlines() if ln.strip()]
+                        signers = _extract_signers_from_lines(c_lines)
+                        if signers:
+                            entry["podpisujacy"] = signers
+
         for entry in mocodawcy:
             if not isinstance(entry, dict):
                 continue
             m_data = entry.get("data")
             if isinstance(m_data, dict):
+                cur_nazwa = str(m_data.get("nazwa") or "").strip()
+                if len(mocodawcy) == 1 and (
+                    not cur_nazwa
+                    or re.search(r"(?i)^(?:KRS|NIP|REGON|ul\.)|\b\d{2}-\d{3}\b", cur_nazwa)
+                    or cur_nazwa not in source_text
+                    or (m_data.get("typ") == "osoba_prawna" and not _COMPANY_NAME_RE.search(cur_nazwa))
+                ):
+                    repaired_name = _extract_first_company_name(t_main)
+                    if repaired_name:
+                        m_data["nazwa"] = repaired_name
                 _fill_missing_entity_ids(m_data, source_text, include_regon=False)
                 if len(mocodawcy) == 1:
                     if m_data.get("krs") is None and len(hints.krs) == 1:
@@ -434,13 +514,19 @@ def _match_on_page(field_path: str, value: Any, page_text: str) -> str | None:
         return _snippet_around(page_text, m_rep.start(), m_rep.end()) if m_rep else None
     if leaf_name in {"czynnosc_powod_id", "czynnosc_opis"}:
         m_act = re.search(
-            r"(?im)^.*(?:odrzuc|wyb[óo]r|wyklucz|specyfikacj|SWZ|uniewa[żz]ni|OPZ|postanowie[ńn]\s+umowy).*$",
+            r"(?im)^.*(?:odrzuc|wyb[óo]r|wyklucz|specyfikacj|SWZ|wyja[śs]nie|modyfikacj|zaniecha|uniewa[żz]ni|OPZ|przedmiotu\s+zam[óo]wienia|postanowie[ńn]\s+umowy).*$",
             page_text,
         )
         return re.sub(r"\s+", " ", m_act.group(0)).strip()[:160] if m_act else None
     if leaf_name == "prowadzacy_postepowanie":
         m_zam = re.search(r"(?im)^.*Zamawiaj[ąa]cy.*$", page_text)
         return re.sub(r"\s+", " ", m_zam.group(0)).strip()[:160] if m_zam else None
+    if leaf_name == "typ":
+        m_typ = re.search(
+            r"(?im)^.*(?:Mocodawc|KRS|NIP|CEIDG|sp\.\s*z\s*o\.o\.|S\.A\.|sp\.\s*[kj]\.).*$",
+            page_text,
+        )
+        return re.sub(r"\s+", " ", m_typ.group(0)).strip()[:160] if m_typ else None
 
     # 2. Exact or whitespace-flexible match
     words = [re.escape(w) for w in s_val.split() if w]
@@ -476,10 +562,14 @@ def _match_on_page(field_path: str, value: Any, page_text: str) -> str | None:
         if m_ted:
             return _snippet_around(page_text, m_ted.start(), m_ted.end())
 
-    # 5. Amount (float -> Polish comma/space formatted amount)
+    # 5. Amount (float -> Polish comma/dot formatted amount with or without currency suffix)
     if leaf_name == "kwota" and isinstance(value, (int, float)):
         int_part = int(round(float(value)))
-        m_amt = re.search(rf"\b{int_part}(?:[\s\xa0]*[,.]\d{{2}})?\s*(?:PLN|z[łl])\b", page_text, re.IGNORECASE)
+        m_amt = re.search(
+            rf"\b{int_part}(?:[\s\xa0]*[,.]\d{{2}}\b|\s*(?:PLN|z[łl])\b)",
+            page_text,
+            re.IGNORECASE,
+        )
         if m_amt:
             return _snippet_around(page_text, m_amt.start(), m_amt.end())
 
