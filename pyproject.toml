@@ -12,6 +12,7 @@ dependencies = [
     "pypdf>=5.0.0",
     "pypdfium2>=4.30.0",
     "pytesseract>=0.3.13",
+    "Pillow>=10.0",
     "httpx>=0.27.0",
     "pyyaml>=6.0.0",
     "streamlit>=1.40.0",
@@ -40,4 +41,5 @@ packages = [
     "backend.services.classifier",
     "backend.services.extractor",
     "backend.services.normalizer",
+    "ocr",
 ]
