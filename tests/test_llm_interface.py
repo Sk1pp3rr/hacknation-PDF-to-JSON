@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -15,10 +16,26 @@ from backend.schemas import (
     PelnomocnictwoSchema,
     PrzelewSchema,
 )
+from backend.services.augmenter import (
+    annotate_odwolanie_header,
+    augment_post_extraction,
+    extract_header_city_and_date,
+    strip_kio_addressee,
+    strip_person_titles,
+)
 from backend.services.llm_client import LLMClient, LLMClientError
 from backend.services.llm_extractor import extract_document, extract_structured_data
+from backend.services.pdf_parser import extract_text_from_pdf_file
 from backend.services.schema_utils import to_strict_json_schema
-from backend.services.validator import extract_identifier_hints, normalize_payload, validate_extraction
+from backend.services.validator import (
+    extract_identifier_hints,
+    is_valid_nip,
+    is_valid_nrb,
+    is_valid_pesel,
+    is_valid_regon,
+    normalize_payload,
+    validate_extraction,
+)
 
 
 def _collect_keys(node: Any) -> set[str]:
@@ -384,49 +401,56 @@ def test_extract_document_targeted_retry_fixes_hallucinated_nip() -> None:
         "Zamawiający w dniu 2026-03-20 unieważnił postępowanie."
     )
     prompts_seen: list[str] = []
+    schemas_seen: list[dict[str, Any]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content.decode("utf-8"))
         prompts_seen.append(body["messages"][-1]["content"])
-        nip_value = "9999284066" if len(prompts_seen) == 1 else "9999284065"
-        payload = {
-            "OdwolanieKIO": {
-                "data": None,
-                "czynnosc_dzien": "2026-03-20",
-                "czynnosc_powod_id": 9,
-                "miejscowosc": None,
-            },
-            "Odwolujacy": [
-                {
-                    "krs": None,
-                    "nazwa": "Belmoria S.A.",
-                    "nip": nip_value,
-                    "regon": None,
-                    "przez-pelnomocnika": 0,
-                    "pelnomocnik": None,
-                }
-            ],
-            "Zamawiajacy": [
-                {
-                    "krs": None,
-                    "nazwa": "Aurelink S.A.",
-                    "nip": "9997518659",
-                    "regon": None,
-                    "prowadzacy_postepowanie": None,
-                }
-            ],
-            "ZamowieniePubliczne": {
-                "numer_bzp": None,
-                "numer_postepowania": None,
-                "numer_ted": None,
-                "tytul": None,
-            },
-        }
+        schemas_seen.append(body["response_format"]["json_schema"])
+        if len(prompts_seen) == 1:
+            payload: dict[str, Any] = {
+                "OdwolanieKIO": {
+                    "data": None,
+                    "czynnosc_dzien": "2026-03-20",
+                    "czynnosc_powod_id": 9,
+                    "miejscowosc": None,
+                },
+                "Odwolujacy": [
+                    {
+                        "krs": None,
+                        "nazwa": "Belmoria S.A.",
+                        "nip": "9999284066",
+                        "regon": None,
+                        "przez-pelnomocnika": 0,
+                        "pelnomocnik": None,
+                    }
+                ],
+                "Zamawiajacy": [
+                    {
+                        "krs": None,
+                        "nazwa": "Aurelink S.A.",
+                        "nip": "9997518659",
+                        "regon": None,
+                        "prowadzacy_postepowanie": None,
+                    }
+                ],
+                "ZamowieniePubliczne": {
+                    "numer_bzp": None,
+                    "numer_postepowania": None,
+                    "numer_ted": None,
+                    "tytul": None,
+                },
+            }
+            usage = {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150}
+        else:
+            payload = {"Odwolujacy_0__nip": "9999284065"}
+            usage = {"prompt_tokens": 60, "completion_tokens": 15, "total_tokens": 75}
+
         return httpx.Response(
             200,
             json={
                 "choices": [{"message": {"content": json.dumps(payload)}}],
-                "usage": {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150},
+                "usage": usage,
             },
         )
 
@@ -436,10 +460,75 @@ def test_extract_document_targeted_retry_fixes_hallucinated_nip() -> None:
     )
     assert res.valid is True
     assert res.attempts == 2
-    assert res.usage.total_tokens == 300
+    assert res.usage.total_tokens == 225
+    assert schemas_seen[1]["name"] == "odwolanie_patch"
+    assert list(schemas_seen[1]["schema"]["properties"].keys()) == ["Odwolujacy_0__nip"]
     assert res.data["Odwolujacy"][0]["nip"] == "9999284065"
+    assert res.data["Zamawiajacy"][0]["nip"] == "9997518659"
     assert "9999284066" in prompts_seen[1]
     assert "9999284065" in prompts_seen[1]
+
+
+def test_single_vs_multi_zamawiajacy_normalization() -> None:
+    base = {
+        "OdwolanieKIO": {"data": None, "czynnosc_dzien": None, "czynnosc_powod_id": 4, "miejscowosc": None},
+        "Odwolujacy": [{"nazwa": "Wykonawca", "przez-pelnomocnika": 0, "pelnomocnik": None}],
+        "ZamowieniePubliczne": {},
+    }
+    single = normalize_payload(
+        DocumentType.ODWOLANIE,
+        {**base, "Zamawiajacy": [{"nazwa": "Zam1", "prowadzacy_postepowanie": 1}]},
+    )
+    assert single["Zamawiajacy"][0]["prowadzacy_postepowanie"] is None
+
+    multi = normalize_payload(
+        DocumentType.ODWOLANIE,
+        {
+            **base,
+            "Zamawiajacy": [
+                {"nazwa": "Zam1", "prowadzacy_postepowanie": 1},
+                {"nazwa": "Zam2", "prowadzacy_postepowanie": 0},
+            ],
+        },
+    )
+    assert [z["prowadzacy_postepowanie"] for z in multi["Zamawiajacy"]] == [1, 0]
+
+
+def test_full_repair_fallback_on_invalid_json() -> None:
+    source_text = (
+        "POLECENIE PRZELEWU\nKwota: 200,00 PLN\n"
+        "Z: PL05470680287581539721455024\nNa: PL68438223049992295262834736\n"
+    )
+    schema_names: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        schema_names.append(body["response_format"]["json_schema"]["name"])
+        if len(schema_names) == 1:
+            content = "{not valid json"
+        else:
+            content = json.dumps(
+                {
+                    "przelew_bankowy": {
+                        "data_operacji": None,
+                        "kwota": 200.0,
+                        "na_rachunek": "68438223049992295262834736",
+                        "numer_transakcji": None,
+                        "tytul": None,
+                        "z_rachunku": "05470680287581539721455024",
+                    }
+                }
+            )
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": content}}], "usage": {"prompt_tokens": 50, "completion_tokens": 20}},
+        )
+
+    client = LLMClient(api_key="test-key", transport=httpx.MockTransport(handler))
+    res = asyncio.run(extract_document(DocumentType.PRZELEW, source_text, client=client, max_retries=1))
+    assert res.valid is True
+    assert res.attempts == 2
+    assert schema_names == ["przelew_extraction", "przelew_repair"]
 
 
 def test_extract_document_section_swarm_for_odwolanie() -> None:
@@ -539,3 +628,141 @@ def test_negative_and_empty_documents_use_zero_tokens() -> None:
     )
     assert res_seg == {}
     assert called is False
+
+
+def test_polish_checksum_validators() -> None:
+    assert is_valid_nip("5262239325") is True
+    assert is_valid_nip("9999284065") is True
+    assert is_valid_nip("5262239326") is False
+    assert is_valid_nip("1234567890") is False  # mod 11 == 10 is invalid
+
+    assert is_valid_regon("000279077") is True
+    assert is_valid_regon("000279078") is False
+    assert is_valid_regon("12345678512347") is True
+    assert is_valid_regon("12345678512348") is False
+
+    assert is_valid_pesel("44051401359") is True
+    assert is_valid_pesel("44051401358") is False
+    assert is_valid_pesel("93198") is False
+
+    assert is_valid_nrb("60101010100081362231000000") is True
+    assert is_valid_nrb("60101010100081362231000001") is False
+
+
+def test_identifier_length_and_strict_checksum_modes() -> None:
+    przelew_text = (
+        "Rachunek z: PL05470680287581539721455024\n"
+        "Rachunek na: PL68438223049992295262834736\n"
+    )
+    bad_len_przelew = {
+        "przelew_bankowy": {
+            "data_operacji": None,
+            "kwota": 200.0,
+            "na_rachunek": "68438223049992295262",
+            "numer_transakcji": None,
+            "tytul": None,
+            "z_rachunku": "05470680287581539721455024",
+        }
+    }
+    res_bad_len = validate_extraction(DocumentType.PRZELEW, bad_len_przelew, przelew_text, strict_checksums=False)
+    assert res_bad_len.valid is False
+    assert "przelew_bankowy.na_rachunek" in res_bad_len.failed_fields
+
+    synthetic_przelew = {
+        "przelew_bankowy": {
+            "data_operacji": None,
+            "kwota": 200.0,
+            "na_rachunek": "68438223049992295262834736",
+            "numer_transakcji": None,
+            "tytul": None,
+            "z_rachunku": "05470680287581539721455024",
+        }
+    }
+    res_lenient = validate_extraction(DocumentType.PRZELEW, synthetic_przelew, przelew_text, strict_checksums=False)
+    assert res_lenient.valid is True
+    assert len(res_lenient.warnings) == 2
+
+    res_strict = validate_extraction(DocumentType.PRZELEW, synthetic_przelew, przelew_text, strict_checksums=True)
+    assert res_strict.valid is False
+    assert set(res_strict.failed_fields) == {"przelew_bankowy.z_rachunku", "przelew_bankowy.na_rachunek"}
+
+    pel_text = "Mocodawca: Firma X, NIP: 5262239325\nPełnomocnik: Jan Nowak, PESEL: 44051401359"
+    pel_bad_pesel = {
+        "mocodawca": [{"data": {"nazwa": "Firma X", "nip": "5262239325", "typ": "osoba_prawna"}, "podpisujacy": []}],
+        "pelnomocnicy": [{"imie_nazwisko": "Jan Nowak", "pesel": "93198"}],
+    }
+    res_pel = validate_extraction(DocumentType.PELNOMOCNICTWO, pel_bad_pesel, pel_text, strict_checksums=False)
+    assert res_pel.valid is False
+    assert "pelnomocnicy[0].pesel" in res_pel.failed_fields
+
+
+def test_augmenter_helpers_and_post_extraction() -> None:
+    assert strip_person_titles("r. pr. Aleksandra Marciniak") == "Aleksandra Marciniak"
+    assert strip_person_titles("Aleksandra Marciniak, r. pr.") == "Aleksandra Marciniak"
+    assert strip_person_titles("adw. Zbigniew Górnicki") == "Zbigniew Górnicki"
+
+    raw_header = (
+        "Prezes Krajowej Izby Odwoławczej\n"
+        "ul. Postępu 17A\n"
+        "02-676 Warszawa\n"
+        "Odwołujący:\nBelmoria S.A.\n"
+        "Zamawiający:\nAurelink S.A.\n"
+        "ODWOŁANIE\ndotyczy: Zakup sprzętu"
+    )
+    stripped = strip_kio_addressee(raw_header)
+    assert "Prezes Krajowej Izby Odwoławczej" not in stripped
+    assert "02-676 Warszawa" not in stripped
+
+    annotated = annotate_odwolanie_header(raw_header)
+    assert "[BRAK DATY I MIEJSCOWOŚCI W NAGŁÓWKU -> data=null, miejscowosc=null]" in annotated
+    assert "<<< SEKCJA: ODWOŁUJĄCY >>>" in annotated
+    assert "<<< SEKCJA: ZAMAWIAJĄCY >>>" in annotated
+
+    aug_odw = augment_post_extraction(
+        DocumentType.ODWOLANIE,
+        {
+            "OdwolanieKIO": {"data": "2026-03-20", "czynnosc_dzien": "2026-03-20", "czynnosc_powod_id": 9, "miejscowosc": "Warszawa"},
+            "Odwolujacy": [
+                {"nazwa": "Belmoria S.A.", "nip": "9999284065", "przez-pelnomocnika": 1, "pelnomocnik": {"imie_nazwisko": "Aleksandra Marciniak, r. pr."}},
+                {"nazwa": "Aurelink S.A.", "nip": "9997518659", "przez-pelnomocnika": 0, "pelnomocnik": None},
+            ],
+            "Zamawiajacy": [{"nazwa": "Aurelink S.A.", "nip": "9997518659", "prowadzacy_postepowanie": 1}],
+            "ZamowieniePubliczne": {"numer_bzp": None, "numer_ted": None},
+        },
+        raw_header + "\n2026/BZP 00999778\nTED: 999137-2026",
+    )
+    assert len(aug_odw["Odwolujacy"]) == 1
+    assert aug_odw["Odwolujacy"][0]["nazwa"] == "Belmoria S.A."
+    assert aug_odw["Odwolujacy"][0]["pelnomocnik"]["imie_nazwisko"] == "Aleksandra Marciniak"
+    assert aug_odw["Zamawiajacy"][0]["prowadzacy_postepowanie"] is None
+    assert aug_odw["OdwolanieKIO"]["data"] is None
+    assert aug_odw["OdwolanieKIO"]["miejscowosc"] is None
+    assert aug_odw["ZamowieniePubliczne"]["numer_bzp"] == "2026/BZP00999778"
+    assert aug_odw["ZamowieniePubliczne"]["numer_ted"] == "999137-2026"
+
+    aug_pel = augment_post_extraction(
+        DocumentType.PELNOMOCNICTWO,
+        {
+            "mocodawca": [{"data": {"nazwa": "Firma", "typ": "osoba_prawna"}, "podpisujacy": [{"imie_nazwisko": "dr Oliwia Kaczmarek"}]}],
+            "pelnomocnicy": [{"imie_nazwisko": "r. pr. Aleksandra Marciniak", "pesel": "93198"}],
+        },
+        "Pełnomocnik: r. pr. Aleksandra Marciniak (nr wpisu na listę: WA 93198)",
+    )
+    assert aug_pel["mocodawca"][0]["podpisujacy"][0]["imie_nazwisko"] == "Oliwia Kaczmarek"
+    assert aug_pel["pelnomocnicy"][0]["imie_nazwisko"] == "Aleksandra Marciniak"
+    assert aug_pel["pelnomocnicy"][0]["pesel"] is None
+
+
+def test_deterministic_header_extractor_all_60_training_cases() -> None:
+    dane_dir = Path("dane")
+    if not dane_dir.exists():
+        pytest.skip("dane/ directory not available")
+    pdf_paths = sorted(dane_dir.glob("przyklad_*/odwolanie.pdf"))
+    assert len(pdf_paths) == 60
+    for pdf_path in pdf_paths:
+        expected = json.loads(pdf_path.with_suffix(".json").read_text(encoding="utf-8"))
+        text = extract_text_from_pdf_file(pdf_path)
+        city, iso_date = extract_header_city_and_date(text)
+        assert city == expected["OdwolanieKIO"]["miejscowosc"], f"City mismatch in {pdf_path}"
+        assert iso_date == expected["OdwolanieKIO"]["data"], f"Date mismatch in {pdf_path}"
+

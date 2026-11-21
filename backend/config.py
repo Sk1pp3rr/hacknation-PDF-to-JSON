@@ -16,7 +16,8 @@ class Settings(BaseSettings):
     llm_temperature: float = 0.0
     llm_max_retries: int = 1
     llm_use_strict_schema: bool = True
-    llm_extraction_mode: Literal["single", "section_swarm"] = "single"
+    llm_strict_checksums: bool = False
+    llm_extraction_mode: Literal["single", "section_swarm"] = "section_swarm"
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 

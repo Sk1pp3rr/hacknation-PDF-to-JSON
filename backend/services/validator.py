@@ -3,10 +3,11 @@
 from copy import deepcopy
 from datetime import date
 import re
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from pydantic import BaseModel, Field, ValidationError
 
+from backend.config import settings
 from backend.schemas import CZYNNOSC_OPIS_BY_ID, SCHEMA_REGISTRY, DocumentType
 
 _NULL_PLACEHOLDERS = {"", "null", "none", "brak", "n/a", "-"}
@@ -31,6 +32,8 @@ _POLISH_MONTHS: dict[str, int] = {
 _NIP_RE = re.compile(r"(?i)\bNIP\b[:\s#-]*([0-9][0-9\s-]{8,14}[0-9])")
 _KRS_RE = re.compile(r"(?i)\bKRS\b[:\s#-]*([0-9][0-9\s-]{8,14}[0-9])")
 _REGON_RE = re.compile(r"(?i)\bREGON\b[:\s#-]*([0-9][0-9\s-]{7,16}[0-9])")
+_PESEL_LABELED_RE = re.compile(r"(?i)\bPESEL\b[:\s#-]*([0-9][0-9\s-]{9,15}[0-9])")
+_PESEL_STANDALONE_RE = re.compile(r"(?<!\d)(\d{11})(?!\d)")
 _NRB_RE = re.compile(r"(?i)(?<![0-9A-Za-z])(?:PL\s*)?(\d(?:[\s-]?\d){25})(?!\d)")
 _BZP_RE = re.compile(r"(?i)\b(\d{4}\s*/\s*BZP\s*\d{8}(?:\s*/\s*\d{2})?)\b")
 _TED_SHORT_RE = re.compile(r"\b(\d{6}-\d{4})\b")
@@ -123,12 +126,61 @@ def normalize_date_str(value: str | None) -> str | None:
     return raw
 
 
+def is_valid_nip(value: str) -> bool:
+    """Validate 10-digit Polish NIP check digit."""
+    s = re.sub(r"\D", "", str(value))
+    if len(s) != 10:
+        return False
+    weights = (6, 5, 7, 2, 3, 4, 5, 6, 7)
+    checksum = sum(int(s[i]) * weights[i] for i in range(9)) % 11
+    return checksum == int(s[9])
+
+
+def is_valid_regon(value: str) -> bool:
+    """Validate 9- or 14-digit Polish REGON check digit."""
+    s = re.sub(r"\D", "", str(value))
+    if len(s) == 9:
+        weights = (8, 9, 2, 3, 4, 5, 6, 7)
+    elif len(s) == 14:
+        weights = (2, 4, 8, 5, 0, 9, 7, 3, 6, 1, 2, 4, 8)
+    else:
+        return False
+    checksum = sum(int(s[i]) * weights[i] for i in range(len(weights))) % 11
+    return (0 if checksum == 10 else checksum) == int(s[-1])
+
+
+def is_valid_pesel(value: str) -> bool:
+    """Validate 11-digit Polish PESEL check digit."""
+    s = re.sub(r"\D", "", str(value))
+    if len(s) != 11:
+        return False
+    weights = (1, 3, 7, 9, 1, 3, 7, 9, 1, 3)
+    checksum = (10 - (sum(int(s[i]) * weights[i] for i in range(10)) % 10)) % 10
+    return checksum == int(s[10])
+
+
+def is_valid_nrb(value: str) -> bool:
+    """Validate 26-digit Polish NRB / IBAN check digits (mod 97 == 1)."""
+    s = _strip_account(value) or ""
+    if len(s) != 26:
+        return False
+    rearranged = s[2:] + "2521" + s[:2]
+    return int(rearranged) % 97 == 1
+
+
+def is_valid_krs(value: str) -> bool:
+    """Validate 10-digit KRS format."""
+    s = re.sub(r"\D", "", str(value))
+    return len(s) == 10
+
+
 class IdentifierHints(BaseModel):
     """Deterministic regex candidates extracted from document text."""
 
     nip: list[str] = Field(default_factory=list)
     krs: list[str] = Field(default_factory=list)
     regon: list[str] = Field(default_factory=list)
+    pesel: list[str] = Field(default_factory=list)
     nrb: list[str] = Field(default_factory=list)
     bzp: list[str] = Field(default_factory=list)
     ted: list[str] = Field(default_factory=list)
@@ -137,7 +189,7 @@ class IdentifierHints(BaseModel):
 
     def is_empty(self) -> bool:
         return not any(
-            (self.nip, self.krs, self.regon, self.nrb, self.bzp, self.ted, self.emails, self.dates)
+            (self.nip, self.krs, self.regon, self.pesel, self.nrb, self.bzp, self.ted, self.emails, self.dates)
         )
 
     def format_compact(self, max_per_kind: int = 4) -> str:
@@ -147,6 +199,7 @@ class IdentifierHints(BaseModel):
             ("NIP", self.nip),
             ("KRS", self.krs),
             ("REGON", self.regon),
+            ("PESEL", self.pesel),
             ("NRB", self.nrb),
             ("BZP", self.bzp),
             ("TED", self.ted),
@@ -158,6 +211,11 @@ class IdentifierHints(BaseModel):
         return "\n".join(lines)
 
 
+def _prioritize_checksum_valid(items: list[str], check_fn: Callable[[str], bool]) -> list[str]:
+    deduped = _dedupe(items)
+    return sorted(deduped, key=lambda item: not check_fn(item))
+
+
 def extract_identifier_hints(text: str) -> IdentifierHints:
     """Extract normalized identifier and date candidates from raw document text."""
     if not text:
@@ -166,6 +224,8 @@ def extract_identifier_hints(text: str) -> IdentifierHints:
     nips = [d for m in _NIP_RE.findall(text) if (d := _digits_only(m)) and len(d) == 10]
     krss = [d for m in _KRS_RE.findall(text) if (d := _digits_only(m)) and len(d) == 10]
     regons = [d for m in _REGON_RE.findall(text) if (d := _digits_only(m)) and len(d) in (9, 14)]
+    pesels_labeled = [d for m in _PESEL_LABELED_RE.findall(text) if (d := _digits_only(m)) and len(d) == 11]
+    pesels_standalone = [d for d in _PESEL_STANDALONE_RE.findall(text) if is_valid_pesel(d)]
     nrbs = [d for m in _NRB_RE.findall(text) if (d := _digits_only(m)) and len(d) == 26]
     bzps = [re.sub(r"\s+", "", m).upper() for m in _BZP_RE.findall(text)]
 
@@ -183,10 +243,11 @@ def extract_identifier_hints(text: str) -> IdentifierHints:
     ]
 
     return IdentifierHints(
-        nip=_dedupe(nips),
+        nip=_prioritize_checksum_valid(nips, is_valid_nip),
         krs=_dedupe(krss),
-        regon=_dedupe(regons),
-        nrb=_dedupe(nrbs),
+        regon=_prioritize_checksum_valid(regons, is_valid_regon),
+        pesel=_prioritize_checksum_valid([*pesels_labeled, *pesels_standalone], is_valid_pesel),
+        nrb=_prioritize_checksum_valid(nrbs, is_valid_nrb),
         bzp=_dedupe(bzps),
         ted=_dedupe(teds),
         emails=_dedupe(emails),
@@ -281,6 +342,10 @@ def _normalize_odwolanie(data: dict[str, Any]) -> None:
         if zp.get("numer_ted") is not None:
             zp["numer_ted"] = _normalize_ted(zp["numer_ted"])
 
+    zamawiajacy = data.get("Zamawiajacy")
+    if isinstance(zamawiajacy, list) and len(zamawiajacy) == 1 and isinstance(zamawiajacy[0], dict):
+        zamawiajacy[0]["prowadzacy_postepowanie"] = None
+
 
 def _normalize_pelnomocnictwo(data: dict[str, Any]) -> None:
     mocodawcy = data.get("mocodawca")
@@ -326,36 +391,73 @@ class ValidationOutcome(BaseModel):
     valid: bool
     data: dict[str, Any] | None = None
     errors: list[str] = Field(default_factory=list)
+    failed_fields: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
 
 
-def _check_iso_date(field_path: str, value: str | None, errors: list[str]) -> None:
+def _format_loc(loc: tuple[Any, ...]) -> str:
+    if not loc:
+        return "root"
+    parts: list[str] = []
+    for part in loc:
+        if isinstance(part, int):
+            if parts:
+                parts[-1] = f"{parts[-1]}[{part}]"
+            else:
+                parts.append(f"[{part}]")
+        else:
+            parts.append(str(part))
+    return ".".join(parts)
+
+
+def _check_iso_date(field_path: str, value: str | None, findings: list[tuple[str, str]]) -> None:
     if value is None:
         return
     if not re.match(r"^\d{4}-\d{2}-\d{2}$", value):
-        errors.append(f"{field_path}='{value}' nie ma formatu YYYY-MM-DD")
+        findings.append((field_path, f"{field_path}='{value}' nie ma formatu YYYY-MM-DD"))
         return
     try:
         date.fromisoformat(value)
     except ValueError:
-        errors.append(f"{field_path}='{value}' nie jest poprawną datą kalendarzową")
+        findings.append((field_path, f"{field_path}='{value}' nie jest poprawną datą kalendarzową"))
 
 
-def _check_grounded_digits(
+def _check_identifier_field(
     field_path: str,
     value: Any,
     compact_source: str,
     candidates: list[str],
-    errors: list[str],
+    expected_lengths: tuple[int, ...],
+    checksum_fn: Callable[[str], bool] | None,
+    strict_checksums: bool,
+    findings: list[tuple[str, str]],
+    warnings: list[str],
 ) -> None:
     if value is None:
         return
-    digits = _digits_only(value)
-    if not digits:
+    digits = _digits_only(value) or ""
+    hint = f"; wykryte w dokumencie: {candidates}" if candidates else ""
+
+    if len(digits) not in expected_lengths:
+        lengths_label = "/".join(str(n) for n in expected_lengths)
+        findings.append(
+            (
+                field_path,
+                f"{field_path}='{value}' ma niepoprawną długość {len(digits)} (wymagane: {lengths_label} cyfr){hint}",
+            )
+        )
         return
+
     if digits not in compact_source:
-        hint = f"; wykryte w dokumencie: {candidates}" if candidates else ""
-        errors.append(f"{field_path}='{value}' nie występuje w tekście źródłowym{hint}")
+        findings.append((field_path, f"{field_path}='{value}' nie występuje w tekście źródłowym{hint}"))
+        return
+
+    if checksum_fn is not None and not checksum_fn(digits):
+        msg = f"{field_path}='{value}' nie przechodzi weryfikacji cyfry kontrolnej"
+        if strict_checksums:
+            findings.append((field_path, f"{msg}{hint}"))
+        else:
+            warnings.append(f"{msg} (dane syntetyczne/zanonimizowane lub błąd OCR)")
 
 
 def _run_grounding_checks(
@@ -363,34 +465,87 @@ def _run_grounding_checks(
     data: dict[str, Any],
     source_text: str,
     hints: IdentifierHints,
-) -> list[str]:
-    errors: list[str] = []
+    *,
+    strict_checksums: bool,
+) -> tuple[list[tuple[str, str]], list[str]]:
+    findings: list[tuple[str, str]] = []
+    warnings: list[str] = []
     compact_source = re.sub(r"[\s-]+", "", source_text).upper()
 
     if doc_type == DocumentType.PRZELEW:
         pb = data.get("przelew_bankowy") or {}
-        _check_iso_date("przelew_bankowy.data_operacji", pb.get("data_operacji"), errors)
-        _check_grounded_digits("przelew_bankowy.z_rachunku", pb.get("z_rachunku"), compact_source, hints.nrb, errors)
-        _check_grounded_digits("przelew_bankowy.na_rachunek", pb.get("na_rachunek"), compact_source, hints.nrb, errors)
+        _check_iso_date("przelew_bankowy.data_operacji", pb.get("data_operacji"), findings)
+        _check_identifier_field(
+            "przelew_bankowy.z_rachunku",
+            pb.get("z_rachunku"),
+            compact_source,
+            hints.nrb,
+            (26,),
+            is_valid_nrb,
+            strict_checksums,
+            findings,
+            warnings,
+        )
+        _check_identifier_field(
+            "przelew_bankowy.na_rachunek",
+            pb.get("na_rachunek"),
+            compact_source,
+            hints.nrb,
+            (26,),
+            is_valid_nrb,
+            strict_checksums,
+            findings,
+            warnings,
+        )
 
     elif doc_type == DocumentType.ODWOLANIE:
         kio = data.get("OdwolanieKIO") or {}
-        _check_iso_date("OdwolanieKIO.data", kio.get("data"), errors)
-        _check_iso_date("OdwolanieKIO.czynnosc_dzien", kio.get("czynnosc_dzien"), errors)
+        _check_iso_date("OdwolanieKIO.data", kio.get("data"), findings)
+        _check_iso_date("OdwolanieKIO.czynnosc_dzien", kio.get("czynnosc_dzien"), findings)
 
         for section_name in ("Odwolujacy", "Zamawiajacy"):
             for idx, entity in enumerate(data.get(section_name) or []):
-                _check_grounded_digits(f"{section_name}[{idx}].nip", entity.get("nip"), compact_source, hints.nip, errors)
-                _check_grounded_digits(f"{section_name}[{idx}].krs", entity.get("krs"), compact_source, hints.krs, errors)
-                _check_grounded_digits(
-                    f"{section_name}[{idx}].regon", entity.get("regon"), compact_source, hints.regon, errors
+                _check_identifier_field(
+                    f"{section_name}[{idx}].nip",
+                    entity.get("nip"),
+                    compact_source,
+                    hints.nip,
+                    (10,),
+                    is_valid_nip,
+                    strict_checksums,
+                    findings,
+                    warnings,
+                )
+                _check_identifier_field(
+                    f"{section_name}[{idx}].krs",
+                    entity.get("krs"),
+                    compact_source,
+                    hints.krs,
+                    (10,),
+                    None,
+                    strict_checksums,
+                    findings,
+                    warnings,
+                )
+                _check_identifier_field(
+                    f"{section_name}[{idx}].regon",
+                    entity.get("regon"),
+                    compact_source,
+                    hints.regon,
+                    (9, 14),
+                    is_valid_regon,
+                    strict_checksums,
+                    findings,
+                    warnings,
                 )
 
         zp = data.get("ZamowieniePubliczne") or {}
         bzp = zp.get("numer_bzp")
         if bzp and re.sub(r"\s+", "", bzp).upper() not in compact_source:
             hint = f"; wykryte w dokumencie: {hints.bzp}" if hints.bzp else ""
-            errors.append(f"ZamowieniePubliczne.numer_bzp='{bzp}' nie występuje w tekście źródłowym{hint}")
+            findings.append(
+                ("ZamowieniePubliczne.numer_bzp", f"ZamowieniePubliczne.numer_bzp='{bzp}' nie występuje w tekście źródłowym{hint}")
+            )
 
         ted = zp.get("numer_ted")
         if ted:
@@ -402,24 +557,58 @@ def _run_grounding_checks(
             )
             if not grounded:
                 hint = f"; wykryte w dokumencie: {hints.ted}" if hints.ted else ""
-                errors.append(f"ZamowieniePubliczne.numer_ted='{ted}' nie występuje w tekście źródłowym{hint}")
+                findings.append(
+                    ("ZamowieniePubliczne.numer_ted", f"ZamowieniePubliczne.numer_ted='{ted}' nie występuje w tekście źródłowym{hint}")
+                )
 
     elif doc_type == DocumentType.PELNOMOCNICTWO:
         for idx, entry in enumerate(data.get("mocodawca") or []):
             entity = entry.get("data") or {}
-            _check_grounded_digits(
-                f"mocodawca[{idx}].data.nip", entity.get("nip"), compact_source, hints.nip, errors
+            _check_identifier_field(
+                f"mocodawca[{idx}].data.nip",
+                entity.get("nip"),
+                compact_source,
+                hints.nip,
+                (10,),
+                is_valid_nip,
+                strict_checksums,
+                findings,
+                warnings,
             )
-            _check_grounded_digits(
-                f"mocodawca[{idx}].data.krs", entity.get("krs"), compact_source, hints.krs, errors
+            _check_identifier_field(
+                f"mocodawca[{idx}].data.krs",
+                entity.get("krs"),
+                compact_source,
+                hints.krs,
+                (10,),
+                None,
+                strict_checksums,
+                findings,
+                warnings,
             )
         for idx, person in enumerate(data.get("pelnomocnicy") or []):
-            _check_grounded_digits(f"pelnomocnicy[{idx}].pesel", person.get("pesel"), compact_source, [], errors)
+            _check_identifier_field(
+                f"pelnomocnicy[{idx}].pesel",
+                person.get("pesel"),
+                compact_source,
+                hints.pesel,
+                (11,),
+                is_valid_pesel,
+                strict_checksums,
+                findings,
+                warnings,
+            )
 
-    return errors
+    return findings, warnings
 
 
-def validate_extraction(doc_type: DocumentType, raw: dict[str, Any], source_text: str) -> ValidationOutcome:
+def validate_extraction(
+    doc_type: DocumentType,
+    raw: dict[str, Any],
+    source_text: str,
+    *,
+    strict_checksums: bool | None = None,
+) -> ValidationOutcome:
     """Normalize LLM output, validate against Pydantic UZP schema, and verify grounding."""
     normalized = normalize_payload(doc_type, raw)
     schema_cls = SCHEMA_REGISTRY.get(doc_type)
@@ -429,17 +618,32 @@ def validate_extraction(doc_type: DocumentType, raw: dict[str, Any], source_text
     try:
         model = schema_cls.model_validate(normalized)
     except ValidationError as exc:
-        errors = [
-            f"{'.'.join(str(part) for part in err['loc']) or 'root'}: {err['msg']}"
-            for err in exc.errors()
-        ]
-        return ValidationOutcome(valid=False, data=normalized, errors=errors)
+        findings: list[tuple[str, str]] = []
+        for err in exc.errors():
+            path = _format_loc(tuple(err["loc"]))
+            findings.append((path, f"{path}: {err['msg']}"))
+        failed_fields = _dedupe(path for path, _ in findings if path != "root")
+        return ValidationOutcome(
+            valid=False,
+            data=normalized,
+            errors=[msg for _, msg in findings],
+            failed_fields=failed_fields,
+        )
 
     dumped = model.model_dump(by_alias=True)
     hints = extract_identifier_hints(source_text)
-    grounding_errors = _run_grounding_checks(doc_type, dumped, source_text, hints)
+    use_strict = settings.llm_strict_checksums if strict_checksums is None else strict_checksums
+    grounding_findings, warnings = _run_grounding_checks(
+        doc_type,
+        dumped,
+        source_text,
+        hints,
+        strict_checksums=use_strict,
+    )
     return ValidationOutcome(
-        valid=len(grounding_errors) == 0,
+        valid=len(grounding_findings) == 0,
         data=dumped,
-        errors=grounding_errors,
+        errors=[msg for _, msg in grounding_findings],
+        failed_fields=_dedupe(path for path, _ in grounding_findings),
+        warnings=warnings,
     )

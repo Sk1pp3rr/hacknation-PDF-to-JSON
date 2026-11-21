@@ -12,6 +12,7 @@ class DocumentType(StrEnum):
     ODWOLANIE = "odwolanie"
     PELNOMOCNICTWO = "pelnomocnictwo"
     PRZELEW = "przelew"
+    DOWOD_WPLATY = "przelew"  # Alias for backward compatibility with classifier/smoke tests
     INNY = "inny"
 
 

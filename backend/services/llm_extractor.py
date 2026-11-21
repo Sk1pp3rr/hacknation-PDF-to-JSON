@@ -1,6 +1,7 @@
-"""Token-efficient EU LLM extraction engine with strict schemas, validation, and targeted retry."""
+"""Token-efficient EU LLM extraction engine with strict schemas, validation, and surgical retry."""
 
 import asyncio
+from copy import deepcopy
 from dataclasses import dataclass, field
 import json
 import re
@@ -20,11 +21,13 @@ from backend.schemas import (
     ZamawiajacyItem,
     ZamowieniePubliczne,
 )
+from backend.services.augmenter import annotate_odwolanie_header, augment_post_extraction
 from backend.services.llm_client import LLMClient, TokenUsage
 from backend.services.schema_utils import to_strict_json_schema
-from backend.services.validator import extract_identifier_hints, validate_extraction
+from backend.services.validator import ValidationOutcome, extract_identifier_hints, validate_extraction
 
 _CZYN_DICT_PROMPT = "; ".join(f"{k}={v}" for k, v in CZYNNOSC_OPIS_BY_ID.items())
+_SCALAR_JSON_TYPES = {"string", "integer", "number", "boolean"}
 
 
 @dataclass(frozen=True)
@@ -49,10 +52,14 @@ EXTRACTION_SPECS: dict[DocumentType, ExtractionSpec] = {
             "Zasady:\n"
             "- Zwracaj null jeśli brak informacji w tekście (nie zgaduj).\n"
             "- Daty podawaj w formacie YYYY-MM-DD.\n"
-            "- data i miejscowosc bierz z nagłówka pierwszej strony.\n"
+            "- data i miejscowosc bierz TYLKO z linii nagłówka pierwszej strony ('<Miasto>, [dnia] <data>'); "
+            "NIE bierz nazwy miasta z adresu Prezesa KIO ani daty z treści zarzutu.\n"
             "- czynnosc_dzien i czynnosc_powod_id ustalaj WYŁĄCZNIE dla pierwszego zarzutu/zaskarżonej czynności.\n"
             f"- czynnosc_powod_id (1-12): {_CZYN_DICT_PROMPT}.\n"
-            "- Odwołujący: jeśli jest konsorcjum, podaj Lidera; przez-pelnomocnika=1 gdy działa pełnomocnik, inaczej 0.\n"
+            "- Odwołujący to WYŁĄCZNIE podmiot z sekcji ODWOŁUJĄCY (nigdy nie dodawaj tam Zamawiającego!); "
+            "jeśli jest konsorcjum, podaj Lidera; przez-pelnomocnika=1 gdy działa pełnomocnik, inaczej 0.\n"
+            "- pelnomocnik.imie_nazwisko to imię i nazwisko osoby (bez 'r. pr.'/'adw.'), a pelnomocnik.nazwa to nazwa kancelarii/firmy "
+            "(np. z 'adres do korespondencji'), NIE imię i nazwisko.\n"
             "- numer_bzp format 'YYYY/BZP########' bez spacji; numer_ted format 'NNNNNN-YYYY'."
         ),
         max_tokens=850,
@@ -69,7 +76,7 @@ EXTRACTION_SPECS: dict[DocumentType, ExtractionSpec] = {
             "- mocodawca[].data.typ to 'osoba_prawna' lub 'osoba_fizyczna'; dla osoby prawnej imie_nazwisko=null.\n"
             "- podpisujacy to lista osób podpisujących w imieniu mocodawcy.\n"
             "- pelnomocnicy[].imie_nazwisko podawaj w mianowniku, bez tytułów (np. bez 'r. pr.').\n"
-            "- pesel zwracaj jako napis cyfr lub null."
+            "- pesel to WYŁĄCZNIE 11-cyfrowy numer PESEL (nigdy numer wpisu na listę radców/adwokatów typu WA 93198 — wtedy zwróć null)."
         ),
         max_tokens=500,
         max_chars=6000,
@@ -107,13 +114,21 @@ class _OdwolanieActionPayload(BaseModel):
 
 _HEADER_SYSTEM_PROMPT = (
     "Ekstrahujesz WYŁĄCZNIE nagłówek, strony (Odwołujący, Zamawiający) i dane zamówienia publicznego do JSON.\n"
-    "Zwracaj null jeśli brak informacji. Daty w formacie YYYY-MM-DD. "
-    "numer_bzp bez spacji ('YYYY/BZP########'), numer_ted jako 'NNNNNN-YYYY'."
+    "Zasady:\n"
+    "- Zwracaj null jeśli brak informacji. Daty w formacie YYYY-MM-DD.\n"
+    "- data i miejscowosc bierz TYLKO z linii nagłówka pierwszej strony ('<Miasto>, [dnia] <data>'); "
+    "NIE bierz miasta z adresu sądu/izby ani daty z treści zarzutu.\n"
+    "- Odwolujacy to WYŁĄCZNIE podmiot z sekcji ODWOŁUJĄCY (nigdy nie dodawaj tam Zamawiającego!).\n"
+    "- pelnomocnik.imie_nazwisko to imię i nazwisko osoby (bez tytułu 'r. pr.'/'adw.'), a pelnomocnik.nazwa to nazwa "
+    "kancelarii/firmy zatrudniającej pełnomocnika (np. z 'adres do korespondencji'), NIE imię i nazwisko.\n"
+    "- numer_bzp bez spacji ('YYYY/BZP########'), numer_ted jako 'NNNNNN-YYYY'."
 )
 
 _ACTION_SYSTEM_PROMPT = (
     "Ekstrahujesz WYŁĄCZNIE datę czynności (czynnosc_dzien, YYYY-MM-DD lub null) "
     "oraz czynnosc_powod_id (liczba 1-12) wyłącznie dla pierwszego zarzutu/zaskarżonej czynności.\n"
+    "Ignoruj datę uchwalenia ustawy Pzp (2019-09-11). Szukaj daty czynności Zamawiającego "
+    "(np. unieważnienia, ogłoszenia, publikacji SWZ) i zapisz ją jako YYYY-MM-DD.\n"
     f"Kody czynnosc_powod_id: {_CZYN_DICT_PROMPT}."
 )
 
@@ -127,6 +142,7 @@ class DocumentExtractionOutcome(BaseModel):
     usage: TokenUsage = Field(default_factory=TokenUsage)
     attempts: int = 0
     validation_errors: list[str] = Field(default_factory=list)
+    validation_warnings: list[str] = Field(default_factory=list)
     mode: str = "single"
 
 
@@ -151,7 +167,10 @@ def split_odwolanie_sections(text: str) -> tuple[str, str]:
     if len(header_slice) < 100:
         header_slice = cleaned[:3500]
 
-    action_start_match = re.search(r"(?im)^(?:\s*Dzia[łl]aj[ąa]c\b|\s*O\s*D\s*W\s*O\s*[ŁL]\s*A\s*N\s*I\s*E\b)", cleaned)
+    action_start_match = re.search(
+        r"(?im)^(?:\s*Dzia[łl]aj[ąa]c\b|\s*O\s*D\s*W\s*O\s*[ŁL]\s*A\s*N\s*I\s*E\b)",
+        cleaned,
+    )
     action_start = action_start_match.start() if action_start_match else min(500, len(cleaned) // 4)
 
     action_tail = cleaned[action_start:]
@@ -219,6 +238,179 @@ def _build_repair_messages(
     ]
 
 
+# --- Surgical field-only repair helpers ---
+
+
+def _parse_field_path(path: str) -> list[str | int]:
+    tokens: list[str | int] = []
+    for part in path.split("."):
+        m = re.match(r"^([A-Za-z0-9_-]+)\[(\d+)\]$", part)
+        if m:
+            tokens.append(m.group(1))
+            tokens.append(int(m.group(2)))
+        else:
+            tokens.append(part)
+    return tokens
+
+
+def _unwrap_object_node(node: dict[str, Any]) -> dict[str, Any] | None:
+    if node.get("type") == "object" and isinstance(node.get("properties"), dict):
+        return node
+    for branch in node.get("anyOf") or ():
+        if isinstance(branch, dict) and branch.get("type") == "object" and isinstance(branch.get("properties"), dict):
+            return branch
+    return None
+
+
+def _is_scalar_schema(node: Any) -> bool:
+    if not isinstance(node, dict):
+        return False
+    if node.get("type") in _SCALAR_JSON_TYPES:
+        return True
+    any_of = node.get("anyOf")
+    if isinstance(any_of, list) and any_of:
+        allowed = _SCALAR_JSON_TYPES | {"null"}
+        return all(isinstance(opt, dict) and opt.get("type") in allowed for opt in any_of) and any(
+            opt.get("type") in _SCALAR_JSON_TYPES for opt in any_of
+        )
+    return False
+
+
+def _lookup_leaf_schema(strict_schema: dict[str, Any], field_path: str) -> dict[str, Any] | None:
+    curr: Any = strict_schema
+    for token in _parse_field_path(field_path):
+        if isinstance(token, int):
+            if isinstance(curr, dict) and curr.get("type") == "array" and isinstance(curr.get("items"), dict):
+                curr = curr["items"]
+            else:
+                return None
+        else:
+            obj = _unwrap_object_node(curr) if isinstance(curr, dict) else None
+            if obj is None or token not in obj["properties"]:
+                return None
+            curr = obj["properties"][token]
+    return deepcopy(curr) if _is_scalar_schema(curr) else None
+
+
+def _resolve_parent(payload: dict[str, Any], tokens: list[str | int]) -> tuple[Any, str | int] | None:
+    if not tokens:
+        return None
+    curr: Any = payload
+    for token in tokens[:-1]:
+        if isinstance(token, int):
+            if not isinstance(curr, list) or not (0 <= token < len(curr)):
+                return None
+            curr = curr[token]
+        else:
+            if not isinstance(curr, dict) or token not in curr:
+                return None
+            curr = curr[token]
+    last = tokens[-1]
+    if isinstance(last, int):
+        if not isinstance(curr, list) or not (0 <= last < len(curr)):
+            return None
+    elif not isinstance(curr, dict):
+        return None
+    return curr, last
+
+
+def _get_by_path(payload: dict[str, Any], field_path: str) -> tuple[bool, Any]:
+    resolved = _resolve_parent(payload, _parse_field_path(field_path))
+    if resolved is None:
+        return False, None
+    parent, last = resolved
+    if isinstance(last, int):
+        return True, parent[last]
+    return True, parent.get(last)
+
+
+def _set_by_path(payload: dict[str, Any], field_path: str, value: Any) -> bool:
+    resolved = _resolve_parent(payload, _parse_field_path(field_path))
+    if resolved is None:
+        return False
+    parent, last = resolved
+    parent[last] = value
+    return True
+
+
+def _make_safe_key(field_path: str) -> str:
+    return re.sub(r"[^a-zA-Z0-9_]", "_", field_path.replace("[", "_").replace("]", "_"))
+
+
+def _build_surgical_patch_plan(
+    doc_type: DocumentType,
+    strict_schema: dict[str, Any],
+    outcome_data: dict[str, Any],
+    failed_fields: list[str],
+    pruned_text: str,
+    errors: list[str],
+    *,
+    include_hints: bool,
+) -> tuple[dict[str, Any], dict[str, str], list[dict[str, str]]] | None:
+    if not (1 <= len(failed_fields) <= 5) or not isinstance(outcome_data, dict):
+        return None
+
+    patch_props: dict[str, Any] = {}
+    key_to_path: dict[str, str] = {}
+    current_values: dict[str, Any] = {}
+
+    for idx, field_path in enumerate(failed_fields):
+        leaf_schema = _lookup_leaf_schema(strict_schema, field_path)
+        exists, current_val = _get_by_path(outcome_data, field_path)
+        if leaf_schema is None or not exists:
+            return None
+        safe_key = _make_safe_key(field_path)
+        if safe_key in key_to_path:
+            safe_key = f"{safe_key}_{idx}"
+        patch_props[safe_key] = leaf_schema
+        key_to_path[safe_key] = field_path
+        current_values[safe_key] = current_val
+
+    patch_schema: dict[str, Any] = {
+        "type": "object",
+        "properties": patch_props,
+        "required": list(patch_props.keys()),
+        "additionalProperties": False,
+    }
+
+    if doc_type == DocumentType.ODWOLANIE and all(p.startswith("OdwolanieKIO.czynnosc_") for p in failed_fields):
+        text_slice = split_odwolanie_sections(pruned_text)[1]
+    else:
+        text_slice = pruned_text[:4500]
+
+    hints_block = ""
+    if include_hints:
+        hints = extract_identifier_hints(text_slice)
+        if any("dzien" in p or "data" in p for p in failed_fields):
+            hints.dates = [d for d in hints.dates if d != "2019-09-11"]
+        if not hints.is_empty():
+            hints_block = f"\nWykryte kandydaty w dokumencie:\n{hints.format_compact()}\n"
+
+    key_map_lines = "\n".join(f"- {k} -> {p}" for k, p in key_to_path.items())
+    error_lines = "\n".join(f"- {err}" for err in errors[:6])
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "Poprawiasz WYŁĄCZNIE wskazane błędne pola JSON na podstawie fragmentu dokumentu. "
+                "Nie wymyślaj danych nieobecnych w tekście; daty zapisuj w formacie YYYY-MM-DD."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"Błędy walidacji:\n{error_lines}\n\n"
+                f"Mapowanie kluczy patcha:\n{key_map_lines}\n\n"
+                f"Błędne wartości obecnie:\n{json.dumps(current_values, ensure_ascii=False)}\n"
+                f"{hints_block}\n"
+                f"FRAGMENT DOKUMENTU:\n{text_slice}\n\n"
+                "Zwróć wyłącznie JSON z poprawionymi kluczami."
+            ),
+        },
+    ]
+    return patch_schema, key_to_path, messages
+
+
 async def _run_single_shot(
     spec: ExtractionSpec,
     pruned_text: str,
@@ -251,13 +443,24 @@ async def _run_odwolanie_section_swarm(
     header_schema = to_strict_json_schema(_OdwolanieHeaderPayload)
     action_schema = to_strict_json_schema(_OdwolanieActionPayload)
 
+    annotated_header = annotate_odwolanie_header(header_slice)
     header_msgs = [
         {"role": "system", "content": _HEADER_SYSTEM_PROMPT},
-        {"role": "user", "content": _build_user_message(header_slice, include_hints=include_hints)},
+        {"role": "user", "content": f"TEKST DOKUMENTU:\n{annotated_header}"},
     ]
+
+    action_user_content = f"TEKST DOKUMENTU:\n{action_slice}"
+    if include_hints:
+        action_hints = extract_identifier_hints(action_slice)
+        action_dates = [d for d in action_hints.dates if d != "2019-09-11"]
+        if action_dates:
+            action_user_content = (
+                f"- DATY (kandydaci na czynnosc_dzien): {', '.join(action_dates[:4])}\n\n"
+                f"{action_user_content}"
+            )
     action_msgs = [
         {"role": "system", "content": _ACTION_SYSTEM_PROMPT},
-        {"role": "user", "content": _build_user_message(action_slice, include_hints=False)},
+        {"role": "user", "content": action_user_content},
     ]
 
     header_res, action_res = await asyncio.gather(
@@ -291,6 +494,11 @@ async def _run_odwolanie_section_swarm(
         "ZamowieniePubliczne": header_dict.get("ZamowieniePubliczne", {}),
     }
     return merged, [*header_errors, *action_errors], total_usage, 2
+
+
+def _augment_and_validate(doc_type: DocumentType, raw_payload: dict[str, Any], pruned_text: str) -> ValidationOutcome:
+    augmented = augment_post_extraction(doc_type, raw_payload, pruned_text)
+    return validate_extraction(doc_type, augmented, pruned_text)
 
 
 async def extract_document(
@@ -344,43 +552,97 @@ async def extract_document(
 
     if parse_errors:
         errors = parse_errors
+        warnings: list[str] = []
+        failed_fields: list[str] = []
         outcome_data = raw_payload
         is_valid = False
     else:
-        validation = validate_extraction(doc_type, raw_payload, pruned_text)
+        validation = _augment_and_validate(doc_type, raw_payload, pruned_text)
         outcome_data = validation.data or {}
         errors = validation.errors
+        warnings = validation.warnings
+        failed_fields = validation.failed_fields
         is_valid = validation.valid
 
     for _ in range(max(0, retries_allowed)):
         if is_valid:
             break
-        repair_msgs = _build_repair_messages(
-            spec,
-            pruned_text,
-            outcome_data,
-            errors,
-            include_hints=include_hints,
-        )
-        repair_res = await active_client.complete_json(
-            messages=repair_msgs,
-            schema_name=f"{doc_type.value}_repair",
-            json_schema=strict_schema,
-            max_tokens=spec.max_tokens,
-        )
-        total_usage = total_usage + repair_res.usage
-        attempts += 1
 
-        repaired_raw, repair_parse_errors = _parse_json_content(repair_res.content)
-        if repair_parse_errors:
-            errors = repair_parse_errors
-            is_valid = False
-            continue
+        patch_plan = (
+            None
+            if parse_errors
+            else _build_surgical_patch_plan(
+                doc_type,
+                strict_schema,
+                outcome_data,
+                failed_fields,
+                pruned_text,
+                errors,
+                include_hints=include_hints,
+            )
+        )
 
-        validation = validate_extraction(doc_type, repaired_raw, pruned_text)
-        outcome_data = validation.data or {}
-        errors = validation.errors
-        is_valid = validation.valid
+        if patch_plan is not None:
+            patch_schema, key_to_path, repair_msgs = patch_plan
+            repair_res = await active_client.complete_json(
+                messages=repair_msgs,
+                schema_name=f"{doc_type.value}_patch",
+                json_schema=patch_schema,
+                max_tokens=min(240, 80 * len(failed_fields) + 60),
+            )
+            total_usage = total_usage + repair_res.usage
+            attempts += 1
+
+            patch_raw, repair_parse_errors = _parse_json_content(repair_res.content)
+            if repair_parse_errors:
+                parse_errors = repair_parse_errors
+                errors = repair_parse_errors
+                failed_fields = []
+                is_valid = False
+                continue
+
+            candidate = deepcopy(outcome_data)
+            for safe_key, field_path in key_to_path.items():
+                if safe_key in patch_raw:
+                    _set_by_path(candidate, field_path, patch_raw[safe_key])
+            validation = _augment_and_validate(doc_type, candidate, pruned_text)
+            outcome_data = validation.data or {}
+            errors = validation.errors
+            warnings = validation.warnings
+            failed_fields = validation.failed_fields
+            is_valid = validation.valid
+        else:
+            repair_msgs = _build_repair_messages(
+                spec,
+                pruned_text,
+                outcome_data,
+                errors,
+                include_hints=include_hints,
+            )
+            repair_res = await active_client.complete_json(
+                messages=repair_msgs,
+                schema_name=f"{doc_type.value}_repair",
+                json_schema=strict_schema,
+                max_tokens=spec.max_tokens,
+            )
+            total_usage = total_usage + repair_res.usage
+            attempts += 1
+
+            repaired_raw, repair_parse_errors = _parse_json_content(repair_res.content)
+            if repair_parse_errors:
+                parse_errors = repair_parse_errors
+                errors = repair_parse_errors
+                failed_fields = []
+                is_valid = False
+                continue
+
+            parse_errors = []
+            validation = _augment_and_validate(doc_type, repaired_raw, pruned_text)
+            outcome_data = validation.data or {}
+            errors = validation.errors
+            warnings = validation.warnings
+            failed_fields = validation.failed_fields
+            is_valid = validation.valid
 
     return DocumentExtractionOutcome(
         doc_type=doc_type,
@@ -389,6 +651,7 @@ async def extract_document(
         usage=total_usage,
         attempts=attempts,
         validation_errors=errors,
+        validation_warnings=warnings,
         mode=active_mode,
     )
 
