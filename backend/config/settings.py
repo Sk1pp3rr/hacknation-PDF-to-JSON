@@ -19,6 +19,15 @@ class Settings(BaseSettings):
     llm_use_strict_schema: bool = True
     llm_strict_checksums: bool = False
     llm_extraction_mode: Literal["single", "section_swarm"] = "section_swarm"
+    llm_max_concurrency: int = 8
+    ocr_enabled: bool = True
+    ocr_engine: str = "tesseract"
+    ocr_languages: str = "pol"
+    ocr_tesseract_cmd: str | None = None
+    ocr_dpi: int = 200
+    ocr_min_chars: int = 30
+    ocr_max_pages: int = 0
+    ocr_workers: int = 4
     documents_config_dir: Path = Path(__file__).resolve().parent / "documents"
     prompts_config_path: Path = Path(__file__).resolve().parent / "prompts.yaml"
 
