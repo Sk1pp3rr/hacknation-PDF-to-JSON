@@ -66,6 +66,14 @@ Uruchomienie frontendu:
 streamlit run frontend/app.py
 ```
 
+Interfejs webowy (React + TypeScript, Vite, tryb dzienny/nocny):
+```bash
+uvicorn backend.main:app --port 8000   # backend z endpointem /api/extract/document
+cd frontend/web
+npm install
+npm run dev                            # http://localhost:5173 (proxy /api -> :8000, zmienna VITE_API_TARGET)
+```
+
 Testy:
 ```bash
 pytest
