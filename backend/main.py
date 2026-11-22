@@ -2,11 +2,13 @@
 
 import asyncio
 import inspect
+from pathlib import Path
 import time
 from typing import Any
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from backend.config import settings
 from backend.core.models import ExtractionResult
@@ -120,3 +122,8 @@ async def extract_batch_documents(files: list[UploadFile] = File(...)) -> dict[s
         "elapsed_seconds": round(time.perf_counter() - t0, 2),
         "results": list(results),
     }
+
+
+_FRONTEND_DIST = Path(__file__).resolve().parents[1] / "frontend" / "web" / "dist"
+if _FRONTEND_DIST.is_dir():
+    app.mount("/", StaticFiles(directory=_FRONTEND_DIST, html=True), name="frontend")

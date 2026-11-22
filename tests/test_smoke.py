@@ -27,3 +27,19 @@ def test_classifier_fallback_examples() -> None:
 
 def test_segmenter_returns_empty_for_empty_text() -> None:
     assert classify_and_segment("") == []
+
+
+def test_classifier_rejects_negative_notices_and_weak_long_docs() -> None:
+    from backend.services.classifier.classifier import fallback_classify
+
+    notice, _ = classify_document(
+        "Dziennik Urzędowy Unii Europejskiej\nOgłoszenie o zamówieniu — odwołanie i pełnomocnictwo"
+    )
+    ruling, _ = classify_document(
+        "Sygn. akt KIO 2617/21\nKrajowa Izba Odwoławcza w składzie:\nPrzewodniczący: Jan Kowalski\nWYROK"
+    )
+    weak_long, _ = fallback_classify(("Informacja podatkowa o rozliczeniu. " * 20) + " kwota do zapłaty.")
+
+    assert notice == DocumentType.INNY
+    assert ruling == DocumentType.INNY
+    assert weak_long == DocumentType.INNY

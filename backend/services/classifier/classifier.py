@@ -11,6 +11,7 @@ import joblib
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.svm import LinearSVC
 
+from backend.config import get_all_document_configs
 from backend.core.models import DocumentSegment, DocumentType
 
 
@@ -26,7 +27,18 @@ CLASS_FILENAMES = {
     "pelnomocnictwo.json": DocumentType.PELNOMOCNICTWO,
     "przelew": DocumentType.PRZELEW,
     "przelew.json": DocumentType.PRZELEW,
+    "potwierdzenie_przelewu": DocumentType.PRZELEW,
 }
+
+_NEGATIVE_HEADER_MARKERS = (
+    "dziennik urzedowy unii europejskiej",
+    "dziennik urzędowy unii europejskiej",
+    "biuletyn zamowien publicznych",
+    "biuletyn zamówień publicznych",
+    "krajowa izba odwolawcza w skladzie",
+    "krajowa izba odwoławcza w składzie",
+    "w imieniu rzeczypospolitej polskiej",
+)
 
 FALLBACK_PHRASES = {
     DocumentType.ODWOLANIE: (
@@ -99,6 +111,30 @@ def load_classifier(path: Path = DEFAULT_MODEL_PATH) -> dict[str, Any]:
     return _model
 
 
+def _is_out_of_scope_header(normalized_text: str) -> bool:
+    head = normalized_text[:800]
+    return any(marker in head for marker in _NEGATIVE_HEADER_MARKERS)
+
+
+def _phrases_by_doc_type() -> dict[DocumentType, tuple[str, ...]]:
+    """Load classification phrases from YAML configs, falling back to built-in defaults."""
+    phrases: dict[DocumentType, tuple[str, ...]] = {}
+    try:
+        configs = get_all_document_configs()
+    except Exception:
+        configs = {}
+    for doc_id, cfg in configs.items():
+        if cfg.klasyfikacja.frazy_kluczowe:
+            try:
+                doc_type = DocumentType(doc_id)
+            except ValueError:
+                continue
+            phrases[doc_type] = tuple(p.lower() for p in cfg.klasyfikacja.frazy_kluczowe)
+    for doc_type, default_phrases in FALLBACK_PHRASES.items():
+        phrases.setdefault(doc_type, default_phrases)
+    return phrases
+
+
 def classify_document(
     text: str,
     model_path: Path = DEFAULT_MODEL_PATH,
@@ -107,6 +143,8 @@ def classify_document(
     text = normalize_text(text)
     if not text:
         return DocumentType.INNY, 1.0
+    if _is_out_of_scope_header(text):
+        return DocumentType.INNY, 0.95
 
     try:
         model = load_classifier(model_path)
@@ -124,10 +162,13 @@ def classify_document(
             label = str(labels[1] if scores > 0 else labels[0])
             score = 1.0 / (1.0 + math.exp(-abs(float(scores))))
 
+        if label == DocumentType.INNY.value:
+            return DocumentType.INNY, score
+
         cutoff = threshold if threshold is not None else float(model.get("threshold", 0.62))
         if score < cutoff:
             fallback_type, fallback_confidence = fallback_classify(text)
-            if fallback_confidence >= 0.60:
+            if fallback_confidence >= 0.60 and fallback_type != DocumentType.INNY:
                 return fallback_type, fallback_confidence
             return DocumentType.INNY, score
         mapping = {
@@ -135,6 +176,7 @@ def classify_document(
             "pelnomocnictwo": DocumentType.PELNOMOCNICTWO,
             "przelew": DocumentType.PRZELEW,
             "dowod_wplaty": DocumentType.PRZELEW,
+            "inny": DocumentType.INNY,
         }
         return mapping.get(label, DocumentType.INNY), score
     except FileNotFoundError:
@@ -150,12 +192,18 @@ def softmax(scores: list[float]) -> list[float]:
 
 def fallback_classify(text: str) -> tuple[DocumentType, float]:
     normalized = normalize_text(text)
-    matches: dict[DocumentType, int] = {}
-    for doc_type, phrases in FALLBACK_PHRASES.items():
-        matches[doc_type] = sum(1 for phrase in phrases if phrase in normalized)
+    if not normalized or _is_out_of_scope_header(normalized):
+        return DocumentType.INNY, 0.95
+
+    phrase_map = _phrases_by_doc_type()
+    matches: dict[DocumentType, int] = {
+        doc_type: sum(1 for phrase in phrases if phrase in normalized)
+        for doc_type, phrases in phrase_map.items()
+    }
     best_type = max(matches, key=matches.__getitem__)
     count = matches[best_type]
-    if count == 0:
+    min_hits = 2 if len(normalized) > 400 else 1
+    if count < min_hits:
         return DocumentType.INNY, 1.0
     confidence = min(0.95, 0.50 + 0.10 * count)
     return best_type, confidence

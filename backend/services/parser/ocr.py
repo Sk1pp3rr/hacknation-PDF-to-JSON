@@ -8,8 +8,12 @@ on a concrete OCR library. Default adapter: Tesseract (Apache-2.0, CPU-only) via
 from __future__ import annotations
 
 import os
+import threading
 from functools import lru_cache
 from typing import Any, Callable, Protocol
+
+# pypdfium2 wraps native PDFium C bindings that are not thread-safe across concurrent renders.
+PDFIUM_LOCK = threading.Lock()
 
 
 class OCREngine(Protocol):
@@ -65,10 +69,11 @@ def render_pdf_page(content: bytes, page_index: int, dpi: int) -> Any:
     """Render one PDF page to a grayscale PIL image."""
     import pypdfium2 as pdfium
 
-    pdf = pdfium.PdfDocument(content)
-    try:
-        page = pdf[page_index]
-        bitmap = page.render(scale=dpi / 72.0, grayscale=True)
-        return bitmap.to_pil()
-    finally:
-        pdf.close()
+    with PDFIUM_LOCK:
+        pdf = pdfium.PdfDocument(content)
+        try:
+            page = pdf[page_index]
+            bitmap = page.render(scale=dpi / 72.0, grayscale=True)
+            return bitmap.to_pil()
+        finally:
+            pdf.close()

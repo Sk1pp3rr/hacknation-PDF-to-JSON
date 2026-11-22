@@ -144,65 +144,71 @@ def render_pdf_explorer_data(
     try:
         from PIL import ImageOps
         import pypdfium2 as pdfium
-
-        doc = pdfium.PdfDocument(content)
+        from backend.services.parser.ocr import PDFIUM_LOCK
     except Exception as exc:
         logger.warning("Nie udało się wyrenderować stron PDF w pypdfium2: %s", exc)
         return [], ev_dicts
 
-    try:
-        page_images: list[str] = []
-        textpages: list[Any] = []
-        sizes: list[tuple[float, float]] = []
-        crops: list[tuple[int, int]] = []
-        n_pages = len(doc)
+    with PDFIUM_LOCK:
+        try:
+            doc = pdfium.PdfDocument(content)
+        except Exception as exc:
+            logger.warning("Nie udało się wyrenderować stron PDF w pypdfium2: %s", exc)
+            return [], ev_dicts
 
-        for idx in range(n_pages):
-            page = doc[idx]
-            sizes.append(page.get_size())
-            textpages.append(page.get_textpage())
-            pil_img = page.render(scale=scale).to_pil()
-            img_w, img_h = pil_img.size
-            crop_top = 0
-            crop_bottom = img_h
+        try:
+            page_images: list[str] = []
+            textpages: list[Any] = []
+            sizes: list[tuple[float, float]] = []
+            crops: list[tuple[int, int]] = []
+            n_pages = len(doc)
 
-            # On multi-page documents, trim inter-page blank margins so pages join into one continuous sheet.
-            if n_pages > 1:
-                bbox = ImageOps.invert(pil_img.convert("L")).getbbox()
-                if bbox:
-                    _, content_top, _, content_bottom = bbox
-                    pad = int(14 * scale)
-                    if idx > 0:
-                        crop_top = max(0, content_top - pad)
-                    if idx < n_pages - 1:
-                        crop_bottom = min(img_h, content_bottom + pad)
-                    if crop_bottom > crop_top + 40:
-                        pil_img = pil_img.crop((0, crop_top, img_w, crop_bottom))
-                    else:
-                        crop_top, crop_bottom = 0, img_h
+            for idx in range(n_pages):
+                page = doc[idx]
+                sizes.append(page.get_size())
+                textpages.append(page.get_textpage())
+                pil_img = page.render(scale=scale).to_pil()
+                img_w, img_h = pil_img.size
+                crop_top = 0
+                crop_bottom = img_h
 
-            crops.append((crop_top, crop_bottom - crop_top))
-            buf = io.BytesIO()
-            pil_img.save(buf, format="PNG", optimize=True)
-            b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-            page_images.append(f"data:image/png;base64,{b64}")
+                # On multi-page documents, trim inter-page blank margins so pages join into one continuous sheet.
+                if n_pages > 1:
+                    bbox = ImageOps.invert(pil_img.convert("L")).getbbox()
+                    if bbox:
+                        _, content_top, _, content_bottom = bbox
+                        pad = int(14 * scale)
+                        if idx > 0:
+                            crop_top = max(0, content_top - pad)
+                        if idx < n_pages - 1:
+                            crop_bottom = min(img_h, content_bottom + pad)
+                        if crop_bottom > crop_top + 40:
+                            pil_img = pil_img.crop((0, crop_top, img_w, crop_bottom))
+                        else:
+                            crop_top, crop_bottom = 0, img_h
 
-        for ev_obj, ev_dict in zip(evidence, ev_dicts):
-            p_idx = (getattr(ev_obj, "page", None) or 1) - 1
-            if 0 <= p_idx < len(textpages):
-                w, h = sizes[p_idx]
-                c_top, c_h = crops[p_idx]
-                ev_dict["rects"] = _find_evidence_rects(
-                    textpages[p_idx],
-                    w,
-                    h,
-                    ev_obj,
-                    scale=scale,
-                    crop_top_px=c_top,
-                    crop_h_px=c_h,
-                )
-            else:
-                ev_dict["rects"] = []
-        return page_images, ev_dicts
-    finally:
-        doc.close()
+                crops.append((crop_top, crop_bottom - crop_top))
+                buf = io.BytesIO()
+                pil_img.save(buf, format="PNG", optimize=True)
+                b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+                page_images.append(f"data:image/png;base64,{b64}")
+
+            for ev_obj, ev_dict in zip(evidence, ev_dicts):
+                p_idx = (getattr(ev_obj, "page", None) or 1) - 1
+                if 0 <= p_idx < len(textpages):
+                    w, h = sizes[p_idx]
+                    c_top, c_h = crops[p_idx]
+                    ev_dict["rects"] = _find_evidence_rects(
+                        textpages[p_idx],
+                        w,
+                        h,
+                        ev_obj,
+                        scale=scale,
+                        crop_top_px=c_top,
+                        crop_h_px=c_h,
+                    )
+                else:
+                    ev_dict["rects"] = []
+            return page_images, ev_dicts
+        finally:
+            doc.close()

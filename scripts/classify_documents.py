@@ -36,11 +36,15 @@ def iter_training_files(root: Path) -> Iterable[tuple[Path, str]]:
     for path in sorted(root.rglob("*")):
         if not path.is_file():
             continue
+        if "skany" in path.parts:
+            continue
         label = CLASS_FILENAMES.get(path.name.lower())
         if label is None:
             label = CLASS_FILENAMES.get(path.stem.lower())
         if label is not None:
             yield path, label.value
+        elif path.suffix.lower() == ".pdf" and ("negatywne" in path.parts or path.parent.name.startswith("przyklad_")):
+            yield path, "inny"
 
 
 def train(train_dir: Path, model_path: Path) -> tuple[int, dict[str, int]]:
@@ -48,7 +52,10 @@ def train(train_dir: Path, model_path: Path) -> tuple[int, dict[str, int]]:
     labels: list[str] = []
     counts: dict[str, int] = {}
     for path, label in iter_training_files(train_dir):
-        texts.append(read_file(path))
+        text = read_file(path).strip()
+        if not text:
+            continue
+        texts.append(text)
         labels.append(label)
         counts[label] = counts.get(label, 0) + 1
 

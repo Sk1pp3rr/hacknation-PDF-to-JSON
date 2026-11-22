@@ -1,0 +1,12 @@
+.git
+.venv
+venv
+__pycache__
+*.pyc
+.pytest_cache
+.env
+frontend/web/node_modules
+frontend/web/dist
+input/
+output/
+models/*.joblib

@@ -1,0 +1,38 @@
+services:
+  app:
+    build: .
+    image: hacknation-pdf-to-json:latest
+    container_name: hacknation-app
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+      - "80:8000"
+    volumes:
+      - ./input:/app/input
+      - ./output:/app/output
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  processor:
+    build: .
+    image: hacknation-pdf-to-json:latest
+    profiles: ["cli"]
+    env_file:
+      - .env
+    volumes:
+      - ./input:/app/input
+      - ./output:/app/output
+    command:
+      [
+        "python",
+        "scripts/process_batch.py",
+        "--input",
+        "/app/input",
+        "--output",
+        "/app/output",
+      ]
