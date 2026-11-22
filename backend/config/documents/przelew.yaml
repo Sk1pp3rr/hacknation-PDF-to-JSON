@@ -32,6 +32,8 @@ ekstrakcja:
     - "Zwracaj null jeśli brak informacji."
     - "data_operacji w formacie YYYY-MM-DD."
     - "kwota jako liczba (float), bez waluty."
+    - "numer_transakcji to numer referencyjny lub numer transakcji (np. po 'Nr ref.', 'NUMER REFERENCYJNY', 'Nr transakcji', 'ID transakcji')."
+    - "tytul to pełna treść pola 'Opis' / 'Tytuł przelewu' (zachowaj także ewentualny kod referencyjny na końcu, jeśli znajduje się w opisie)."
 
 normalizacja:
   wymagane_pola:

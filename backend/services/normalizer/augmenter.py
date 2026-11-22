@@ -479,12 +479,29 @@ def _augment_pelnomocnictwo(data: dict[str, Any], source_text: str) -> None:
                     person["pesel"] = hints.pesel[0]
 
 
+_TX_REF_RE = re.compile(
+    r"(?im)(?:nr\s*ref\.?|numer\s+referencyjny|numer\s+transakcji|nr\s+transakcji|id\s+transakcji|numer\s+operacji|nr\s+operacji)"
+    r"[\s.:·\-]{1,60}([A-Z0-9][A-Z0-9\-/]{5,40})"
+)
+
+
+def _extract_transaction_number(source_text: str) -> str | None:
+    match = _TX_REF_RE.search(source_text)
+    if match:
+        candidate = match.group(1).strip(".,;:")
+        if any(ch.isdigit() for ch in candidate):
+            return candidate
+    return None
+
+
 def _augment_przelew(data: dict[str, Any], source_text: str) -> None:
     pb = data.get("przelew_bankowy")
     if not isinstance(pb, dict):
         return
     pb.setdefault("z_rachunku", None)
     pb.setdefault("na_rachunek", None)
+    if pb.get("numer_transakcji") is None:
+        pb["numer_transakcji"] = _extract_transaction_number(source_text)
     if pb.get("z_rachunku") is not None and pb.get("na_rachunek") is not None:
         return
     ordered = extract_accounts_in_order(source_text)

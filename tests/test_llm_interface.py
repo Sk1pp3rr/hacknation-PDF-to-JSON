@@ -1095,5 +1095,16 @@ def test_invalid_nullable_field_becomes_null_after_retries() -> None:
     assert any("Ustawiono null" in w for w in outcome.validation_warnings)
 
 
+def test_augment_przelew_extracts_numer_transakcji_from_ref_labels() -> None:
+    src_multiline = "Kwota operacji\n200,00 PLN\nNr ref.\nCEN2604016344389\nZREALIZOWANO"
+    src_dotted = "NUMER REFERENCYJNY ............................ CEN2603024646444\nSTATUS: Wykonany"
+
+    out1 = augment_post_extraction(DocumentType.PRZELEW, {"przelew_bankowy": {"numer_transakcji": None}}, src_multiline)
+    out2 = augment_post_extraction(DocumentType.PRZELEW, {"przelew_bankowy": {"numer_transakcji": None}}, src_dotted)
+
+    assert out1["przelew_bankowy"]["numer_transakcji"] == "CEN2604016344389"
+    assert out2["przelew_bankowy"]["numer_transakcji"] == "CEN2603024646444"
+
+
 
 
