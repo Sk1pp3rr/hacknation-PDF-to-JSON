@@ -72,3 +72,15 @@ def test_classifier_prefers_appeal_over_proxy_when_appeal_mentions_representativ
     )
     doc_type, _ = fallback_classify(noisy_appeal)
     assert doc_type == DocumentType.ODWOLANIE
+
+
+def test_classifier_handles_dashed_kio_ruling_and_proxy_with_appeal_scope() -> None:
+    ruling, _ = classify_document(
+        "Sygn. akt: KIO 531/16 WYROK z dnia 25 kwietnia 2016 r. Krajowa Izba Odwoławcza - w składzie: Przewodniczący: Jan Kowalski"
+    )
+    proxy_with_scope, _ = classify_document(
+        "Warszawa, 10.05.2026 r.\nPEŁNOMOCNICTWO\nMocodawca: Odwołujący Firma X\nZamawiający: Gmina Y\n"
+        "Niniejszym udziela pełnomocnictwa r. pr. Annie Nowak do wniesienia odwołania od czynności zamawiającego."
+    )
+    assert ruling == DocumentType.INNY
+    assert proxy_with_scope == DocumentType.PELNOMOCNICTWO

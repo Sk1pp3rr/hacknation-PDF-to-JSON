@@ -112,21 +112,30 @@ def load_classifier(path: Path = DEFAULT_MODEL_PATH) -> dict[str, Any]:
 
 
 def _is_out_of_scope_header(normalized_text: str) -> bool:
-    head = normalized_text[:800]
-    return any(marker in head for marker in _NEGATIVE_HEADER_MARKERS)
+    head = _strip_accents(normalized_text[:800])
+    if any(_strip_accents(marker) in head for marker in _NEGATIVE_HEADER_MARKERS):
+        return True
+    is_kio_ruling = (
+        ("sygn. akt" in head or "krajowa izba odwolawcza" in head)
+        and ("w skladzie:" in head or "przewodniczacy:" in head)
+        and ("wyrok" in head or "postanowienie" in head)
+    )
+    return is_kio_ruling
 
 
 def _looks_like_appeal_over_proxy(normalized_text: str) -> bool:
     """Detect when a KIO appeal mentions a representative/proxy in its header without being a standalone proxy."""
-    head = normalized_text[:120]
-    if head.startswith("pełnomocnictwo") or head.startswith("pelnomocnictwo"):
+    folded = _strip_accents(normalized_text)
+    if "pelnomocnictwo" in folded[:350] and any(
+        grant in folded[:900] for grant in ("udziela", "upowazni", "niniejszym ustanawia")
+    ):
         return False
-    has_parties = ("odwołując" in normalized_text or "odwolujac" in normalized_text) and (
-        "zamawiając" in normalized_text or "zamawiajac" in normalized_text
-    )
+    if folded[:120].startswith("pelnomocnictwo"):
+        return False
+    has_parties = "odwolujac" in folded and "zamawiajac" in folded
     has_appeal_body = any(
-        marker in normalized_text
-        for marker in ("zarzut", "zarzuca", "wnoszę o", "wnosze o", "odwołanie od", "odwolanie od")
+        marker in folded
+        for marker in ("zarzut", "zarzuca", "wnosze o")
     )
     return has_parties and has_appeal_body
 
