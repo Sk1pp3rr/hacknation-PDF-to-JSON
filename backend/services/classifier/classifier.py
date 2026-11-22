@@ -116,6 +116,21 @@ def _is_out_of_scope_header(normalized_text: str) -> bool:
     return any(marker in head for marker in _NEGATIVE_HEADER_MARKERS)
 
 
+def _looks_like_appeal_over_proxy(normalized_text: str) -> bool:
+    """Detect when a KIO appeal mentions a representative/proxy in its header without being a standalone proxy."""
+    head = normalized_text[:120]
+    if head.startswith("pełnomocnictwo") or head.startswith("pelnomocnictwo"):
+        return False
+    has_parties = ("odwołując" in normalized_text or "odwolujac" in normalized_text) and (
+        "zamawiając" in normalized_text or "zamawiajac" in normalized_text
+    )
+    has_appeal_body = any(
+        marker in normalized_text
+        for marker in ("zarzut", "zarzuca", "wnoszę o", "wnosze o", "odwołanie od", "odwolanie od")
+    )
+    return has_parties and has_appeal_body
+
+
 def _phrases_by_doc_type() -> dict[DocumentType, tuple[str, ...]]:
     """Load classification phrases from YAML configs, falling back to built-in defaults."""
     phrases: dict[DocumentType, tuple[str, ...]] = {}
@@ -178,7 +193,10 @@ def classify_document(
             "dowod_wplaty": DocumentType.PRZELEW,
             "inny": DocumentType.INNY,
         }
-        return mapping.get(label, DocumentType.INNY), score
+        doc_type = mapping.get(label, DocumentType.INNY)
+        if doc_type == DocumentType.PELNOMOCNICTWO and _looks_like_appeal_over_proxy(text):
+            return DocumentType.ODWOLANIE, score
+        return doc_type, score
     except FileNotFoundError:
         return fallback_classify(text)
 
@@ -190,14 +208,22 @@ def softmax(scores: list[float]) -> list[float]:
     return [value / total for value in exponents]
 
 
+_DIACRITIC_MAP = str.maketrans("ąćęłńóśźżĄĆĘŁŃÓŚŹŻ", "acelnoszzACELNOSZZ")
+
+
+def _strip_accents(text: str) -> str:
+    return text.translate(_DIACRITIC_MAP)
+
+
 def fallback_classify(text: str) -> tuple[DocumentType, float]:
     normalized = normalize_text(text)
     if not normalized or _is_out_of_scope_header(normalized):
         return DocumentType.INNY, 0.95
 
+    folded = _strip_accents(normalized)
     phrase_map = _phrases_by_doc_type()
     matches: dict[DocumentType, int] = {
-        doc_type: sum(1 for phrase in phrases if phrase in normalized)
+        doc_type: sum(1 for phrase in phrases if _strip_accents(phrase) in folded)
         for doc_type, phrases in phrase_map.items()
     }
     best_type = max(matches, key=matches.__getitem__)
@@ -206,6 +232,8 @@ def fallback_classify(text: str) -> tuple[DocumentType, float]:
     if count < min_hits:
         return DocumentType.INNY, 1.0
     confidence = min(0.95, 0.50 + 0.10 * count)
+    if best_type == DocumentType.PELNOMOCNICTWO and _looks_like_appeal_over_proxy(normalized):
+        return DocumentType.ODWOLANIE, confidence
     return best_type, confidence
 
 

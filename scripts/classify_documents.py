@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import random
 import sys
 from pathlib import Path
 from typing import Iterable
@@ -32,8 +33,25 @@ def read_file(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+_DIACRITIC_MAP = str.maketrans("ąćęłńóśźżĄĆĘŁŃÓŚŹŻ", "acelnoszzACELNOSZZ")
+
+
+def _augment_ocr_variants(text: str, rng: random.Random) -> list[str]:
+    """Generate synthetic OCR-like variants (no diacritics, noisy line breaks, head slice) from PDF text."""
+    words = text.split()
+    if len(words) < 15:
+        return []
+    no_diacritics = " ".join(
+        w.translate(_DIACRITIC_MAP) if rng.random() < 0.45 else w
+        for w in words
+    )
+    head_slice = " ".join(words[: min(len(words), 420)])
+    noisy = head_slice.replace("ł", "l").replace("ó", "o").replace("ć", "c")
+    return [no_diacritics, noisy]
+
+
 def iter_training_files(root: Path) -> Iterable[tuple[Path, str]]:
-    for path in sorted(root.rglob("*")):
+    for path in sorted(root.rglob("*.pdf")):
         if not path.is_file():
             continue
         if "skany" in path.parts:
@@ -43,11 +61,12 @@ def iter_training_files(root: Path) -> Iterable[tuple[Path, str]]:
             label = CLASS_FILENAMES.get(path.stem.lower())
         if label is not None:
             yield path, label.value
-        elif path.suffix.lower() == ".pdf" and ("negatywne" in path.parts or path.parent.name.startswith("przyklad_")):
+        elif "negatywne" in path.parts or path.parent.name.startswith("przyklad_"):
             yield path, "inny"
 
 
 def train(train_dir: Path, model_path: Path) -> tuple[int, dict[str, int]]:
+    rng = random.Random(42)
     texts: list[str] = []
     labels: list[str] = []
     counts: dict[str, int] = {}
@@ -58,6 +77,9 @@ def train(train_dir: Path, model_path: Path) -> tuple[int, dict[str, int]]:
         texts.append(text)
         labels.append(label)
         counts[label] = counts.get(label, 0) + 1
+        for variant in _augment_ocr_variants(text, rng):
+            texts.append(variant)
+            labels.append(label)
 
     model = train_classifier(texts, labels)
     saved = save_classifier(model, model_path)

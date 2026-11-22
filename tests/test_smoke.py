@@ -58,3 +58,17 @@ def test_extract_document_endpoint_rejects_negative_pdf() -> None:
     assert body["data"] == {}
     assert body["meta"]["doc_type"] == "inny"
     assert len(body["meta"]["page_images"]) >= 1
+
+
+def test_classifier_prefers_appeal_over_proxy_when_appeal_mentions_representative() -> None:
+    from backend.services.classifier.classifier import fallback_classify
+
+    noisy_appeal = (
+        "Warszawa, dnia 10 maja 2026 r. Odwolujacy: Firma ABC sp. z o.o. reprezentowana przez "
+        "pelnomocnika r. pr. Jana Kowalskiego na podstawie zalaczonego pelnomocnictwa. "
+        "Zamawiajacy: Gmina XYZ. Odwolanie od niezgodnej z przepisami czynnosci Zamawiajacego. "
+        "Zarzuca naruszenie art. 16 Pzp i wnosze o uwzglednienie odwolania. "
+        "Pelnomocnik podpisal pismo jako pelnomocnik strony."
+    )
+    doc_type, _ = fallback_classify(noisy_appeal)
+    assert doc_type == DocumentType.ODWOLANIE
