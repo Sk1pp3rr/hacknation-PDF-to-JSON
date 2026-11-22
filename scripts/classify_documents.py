@@ -14,6 +14,7 @@ from pypdf import PdfReader
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
+from backend.config import get_all_document_configs  # noqa: E402
 from backend.services.classifier import (  # noqa: E402
     CLASS_FILENAMES,
     classify_document,
@@ -50,17 +51,25 @@ def _augment_ocr_variants(text: str, rng: random.Random) -> list[str]:
     return [no_diacritics, noisy]
 
 
+def _configured_filename_labels() -> dict[str, str]:
+    mapping = {name: doc_type.value for name, doc_type in CLASS_FILENAMES.items()}
+    for doc_id, cfg in get_all_document_configs().items():
+        mapping.setdefault(doc_id.lower(), doc_id)
+        for pattern in cfg.klasyfikacja.filtry_nazw_plikow:
+            mapping.setdefault(pattern.lower(), doc_id)
+    return mapping
+
+
 def iter_training_files(root: Path) -> Iterable[tuple[Path, str]]:
+    filename_labels = _configured_filename_labels()
     for path in sorted(root.rglob("*.pdf")):
         if not path.is_file():
             continue
         if "skany" in path.parts:
             continue
-        label = CLASS_FILENAMES.get(path.name.lower())
-        if label is None:
-            label = CLASS_FILENAMES.get(path.stem.lower())
+        label = filename_labels.get(path.name.lower()) or filename_labels.get(path.stem.lower())
         if label is not None:
-            yield path, label.value
+            yield path, label
         elif "negatywne" in path.parts or path.parent.name.startswith("przyklad_"):
             yield path, "inny"
 

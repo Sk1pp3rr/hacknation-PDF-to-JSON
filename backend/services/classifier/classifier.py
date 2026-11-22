@@ -150,9 +150,24 @@ def _looks_like_proxy_over_appeal(normalized_text: str) -> bool:
     return has_proxy_header and not has_appeal_body
 
 
-def _phrases_by_doc_type() -> dict[DocumentType, tuple[str, ...]]:
-    """Load classification phrases from YAML configs, falling back to built-in defaults."""
-    phrases: dict[DocumentType, tuple[str, ...]] = {}
+def _resolve_doc_type(label: str) -> DocumentType | str:
+    """Resolve a predicted label to a built-in DocumentType or a dynamic YAML class id."""
+    if label == "dowod_wplaty":
+        return DocumentType.PRZELEW
+    try:
+        return DocumentType(label)
+    except ValueError:
+        try:
+            if label in get_all_document_configs():
+                return label
+        except Exception:
+            pass
+        return DocumentType.INNY
+
+
+def _phrases_by_doc_type() -> dict[DocumentType | str, tuple[str, ...]]:
+    """Load classification phrases from YAML configs, including dynamically added classes."""
+    phrases: dict[DocumentType | str, tuple[str, ...]] = {}
     try:
         configs = get_all_document_configs()
     except Exception:
@@ -160,20 +175,47 @@ def _phrases_by_doc_type() -> dict[DocumentType, tuple[str, ...]]:
     for doc_id, cfg in configs.items():
         if cfg.klasyfikacja.frazy_kluczowe:
             try:
-                doc_type = DocumentType(doc_id)
+                key: DocumentType | str = DocumentType(doc_id)
             except ValueError:
-                continue
-            phrases[doc_type] = tuple(p.lower() for p in cfg.klasyfikacja.frazy_kluczowe)
+                key = doc_id
+            phrases[key] = tuple(p.lower() for p in cfg.klasyfikacja.frazy_kluczowe)
     for doc_type, default_phrases in FALLBACK_PHRASES.items():
         phrases.setdefault(doc_type, default_phrases)
     return phrases
+
+
+def _match_untrained_yaml_classes(
+    normalized_text: str,
+    trained_labels: set[str],
+) -> tuple[str, float] | None:
+    """Match newly added YAML document classes even before retraining LinearSVC."""
+    try:
+        configs = get_all_document_configs()
+    except Exception:
+        return None
+
+    folded = _strip_accents(normalized_text)
+    best_id: str | None = None
+    best_conf = 0.0
+    for doc_id, cfg in configs.items():
+        if doc_id in trained_labels or not cfg.klasyfikacja.frazy_kluczowe:
+            continue
+        phrases = tuple(_strip_accents(p.lower()) for p in cfg.klasyfikacja.frazy_kluczowe)
+        hits = sum(1 for phrase in phrases if phrase in folded)
+        min_hits = min(len(phrases), 2 if len(normalized_text) > 400 else 1)
+        if hits >= min_hits and hits > 0:
+            conf = min(0.95, 0.50 + 0.15 * hits)
+            if conf >= cfg.klasyfikacja.prog_pewnosci and conf > best_conf:
+                best_id = doc_id
+                best_conf = conf
+    return (best_id, best_conf) if best_id is not None else None
 
 
 def classify_document(
     text: str,
     model_path: Path = DEFAULT_MODEL_PATH,
     threshold: float | None = None,
-) -> tuple[DocumentType, float]:
+) -> tuple[DocumentType | str, float]:
     text = normalize_text(text)
     if not text:
         return DocumentType.INNY, 1.0
@@ -182,9 +224,13 @@ def classify_document(
 
     try:
         model = load_classifier(model_path)
+        labels = model["classifier"].classes_
+        untrained_match = _match_untrained_yaml_classes(text, {str(lbl) for lbl in labels})
+        if untrained_match is not None:
+            return untrained_match
+
         matrix = model["vectorizer"].transform([text])
         scores = model["classifier"].decision_function(matrix)[0]
-        labels = model["classifier"].classes_
 
         if hasattr(scores, "__len__"):
             scores = list(scores)
@@ -205,14 +251,7 @@ def classify_document(
             if fallback_confidence >= 0.60 and fallback_type != DocumentType.INNY:
                 return fallback_type, fallback_confidence
             return DocumentType.INNY, score
-        mapping = {
-            "odwolanie": DocumentType.ODWOLANIE,
-            "pelnomocnictwo": DocumentType.PELNOMOCNICTWO,
-            "przelew": DocumentType.PRZELEW,
-            "dowod_wplaty": DocumentType.PRZELEW,
-            "inny": DocumentType.INNY,
-        }
-        doc_type = mapping.get(label, DocumentType.INNY)
+        doc_type = _resolve_doc_type(label)
         if doc_type == DocumentType.PELNOMOCNICTWO and _looks_like_appeal_over_proxy(text):
             return DocumentType.ODWOLANIE, score
         if doc_type == DocumentType.ODWOLANIE and _looks_like_proxy_over_appeal(text):
@@ -236,14 +275,14 @@ def _strip_accents(text: str) -> str:
     return text.translate(_DIACRITIC_MAP)
 
 
-def fallback_classify(text: str) -> tuple[DocumentType, float]:
+def fallback_classify(text: str) -> tuple[DocumentType | str, float]:
     normalized = normalize_text(text)
     if not normalized or _is_out_of_scope_header(normalized):
         return DocumentType.INNY, 0.95
 
     folded = _strip_accents(normalized)
     phrase_map = _phrases_by_doc_type()
-    matches: dict[DocumentType, int] = {
+    matches: dict[DocumentType | str, int] = {
         doc_type: sum(1 for phrase in phrases if _strip_accents(phrase) in folded)
         for doc_type, phrases in phrase_map.items()
     }

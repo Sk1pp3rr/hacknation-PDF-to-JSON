@@ -1061,5 +1061,39 @@ def test_format_uzp_json_two_decimal_amount() -> None:
     assert json.loads(formatted_17_5)["przelew_bankowy"]["kwota"] == 17.5
 
 
+def test_invalid_nullable_field_becomes_null_after_retries() -> None:
+    bad_payload = {
+        "przelew_bankowy": {
+            "data_operacji": "2026-03-21",
+            "kwota": 200.0,
+            "na_rachunek": "99999999999999999999999999",
+            "numer_transakcji": "CEN2604016344389",
+            "tytul": "opłata skarbowa",
+            "z_rachunku": "05470680287581539721455024",
+        }
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": json.dumps(bad_payload)}}], "usage": {"prompt_tokens": 10, "completion_tokens": 15}},
+        )
+
+    client = LLMClient(api_key="test-key", transport=httpx.MockTransport(handler))
+    text = (
+        "Potwierdzenie przelewu\n"
+        "Data operacji: 2026-03-21\n"
+        "Kwota: 200,00 PLN\n"
+        "Numer transakcji: CEN2604016344389\n"
+        "Tytuł: opłata skarbowa\n"
+        "Z rachunku: 05470680287581539721455024\n"
+    )
+    outcome = asyncio.run(
+        extract_document(DocumentType.PRZELEW, text, client=client, mode="single", max_retries=0)
+    )
+    assert outcome.data["przelew_bankowy"]["na_rachunek"] is None
+    assert any("Ustawiono null" in w for w in outcome.validation_warnings)
+
+
 
 

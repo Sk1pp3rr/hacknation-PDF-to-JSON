@@ -97,3 +97,36 @@ def test_classifier_city_first_proxy_with_kio_scope_stays_pelnomocnictwo() -> No
     )
     doc_type, _ = classify_document(city_first_proxy)
     assert doc_type == DocumentType.PELNOMOCNICTWO
+
+
+def test_dynamic_yaml_class_works_without_code_changes(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from backend.config import settings
+
+    (tmp_path / "wezwanie.yaml").write_text(
+        """
+id: "wezwanie"
+nazwa: "Wezwanie"
+klasyfikacja:
+  frazy_kluczowe:
+    - "wezwanie do uzupelnienia"
+    - "braki formalne odwolania"
+  prog_pewnosci: 0.62
+ekstrakcja:
+  system_prompt: "Ekstrahuj wezwanie"
+  json_schema:
+    type: object
+    additionalProperties: false
+    required: ["sygnatura"]
+    properties:
+      sygnatura:
+        type: ["string", "null"]
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(settings, "documents_config_dir", tmp_path)
+
+    doc_type, conf = classify_document(
+        "Krajowa Izba Odwoławcza kieruje wezwanie do uzupełnienia oraz wskazuje braki formalne odwołania."
+    )
+    assert doc_type == "wezwanie"
+    assert conf >= 0.62

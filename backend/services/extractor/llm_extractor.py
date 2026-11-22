@@ -513,6 +513,31 @@ def _augment_and_validate(
     return validate_extraction(doc_type, augmented, pruned_text)
 
 
+def _schema_allows_null(leaf_schema: dict[str, Any] | None) -> bool:
+    if leaf_schema is None:
+        return True
+    schema_type = leaf_schema.get("type")
+    if schema_type == "null" or (isinstance(schema_type, list) and "null" in schema_type):
+        return True
+    return any(
+        isinstance(branch, dict) and branch.get("type") == "null"
+        for branch in leaf_schema.get("anyOf", [])
+    )
+
+
+def _nullify_invalid_fields(
+    outcome_data: dict[str, Any],
+    failed_fields: list[str],
+    strict_schema: dict[str, Any] | None,
+    warnings: list[str],
+) -> None:
+    """Replace unresolved invalid/hallucinated nullable fields with `None` (`null` in JSON)."""
+    for field_path in failed_fields:
+        leaf_schema = _lookup_leaf_schema(strict_schema, field_path) if strict_schema else None
+        if _schema_allows_null(leaf_schema) and _set_by_path(outcome_data, field_path, None):
+            warnings.append(f"Ustawiono null dla niezweryfikowanego pola: {field_path}")
+
+
 async def extract_document(
     doc_type: DocumentType | str,
     text: str,
@@ -693,6 +718,9 @@ async def extract_document(
             warnings = validation.warnings
             failed_fields = validation.failed_fields
             is_valid = validation.valid
+
+    if not is_valid and failed_fields and isinstance(outcome_data, dict):
+        _nullify_invalid_fields(outcome_data, failed_fields, strict_schema, warnings)
 
     return DocumentExtractionOutcome(
         doc_type=doc_type,

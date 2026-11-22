@@ -174,3 +174,29 @@ python scripts/classify_documents.py dane/przyklad_01/odwolanie.json
 python scripts/classify_documents.py dane/przyklad_01
 python scripts/classify_documents.py "plik.pdf" --output wynik.json
 ```
+
+## Dodawanie nowej klasy dokumentu (bez modyfikacji kodu)
+
+System jest w pełni sterowany konfiguracją YAML ([backend/config/documents/](backend/config/documents/)). Aby dodać obsługę nowej klasy dokumentu (np. `wezwanie`), wystarczy utworzyć plik `backend/config/documents/wezwanie.yaml`:
+
+```yaml
+id: "wezwanie"
+nazwa: "Wezwanie do uzupełnienia braków"
+klasyfikacja:
+  filtry_nazw_plikow: ["wezwanie", "wezwanie.pdf"]
+  frazy_kluczowe: ["wezwanie do uzupełnienia", "wzywa wykonawcę", "braki formalne"]
+  prog_pewnosci: 0.62
+ekstrakcja:
+  max_tokens: 300
+  max_chars: 6000
+  system_prompt: "Ekstrahujesz dane z wezwania do ścisłego JSON."
+  json_schema:
+    type: object
+    additionalProperties: false
+    required: ["sygnatura", "termin_dni"]
+    properties:
+      sygnatura: { type: ["string", "null"] }
+      termin_dni: { type: ["integer", "null"] }
+```
+
+Nowa klasa jest od razu rozpoznawana przez klasyfikator (`classify_document`) oraz ekstraktor LLM (`extract_document`) bez zmian w kodzie Pythona.
