@@ -84,3 +84,16 @@ def test_classifier_handles_dashed_kio_ruling_and_proxy_with_appeal_scope() -> N
     )
     assert ruling == DocumentType.INNY
     assert proxy_with_scope == DocumentType.PELNOMOCNICTWO
+
+
+def test_classifier_city_first_proxy_with_kio_scope_stays_pelnomocnictwo() -> None:
+    city_first_proxy = (
+        "Gdańsk, dnia 14 kwietnia 2026 r.\n"
+        "PEŁNOMOCNICTWO PROCESOWE\n"
+        "Działając w imieniu Odwołującego: TechBud Sp. z o.o., udzielam pełnomocnictwa "
+        "r. pr. Piotrowi Wiśniewskiemu do reprezentowania przed Krajową Izbą Odwoławczą "
+        "w postępowaniu odwoławczym przeciwko Zamawiającemu: Zarząd Dróg Miejskich, "
+        "w tym do wniesienia odwołania od czynności wyboru najkorzystniejszej oferty."
+    )
+    doc_type, _ = classify_document(city_first_proxy)
+    assert doc_type == DocumentType.PELNOMOCNICTWO

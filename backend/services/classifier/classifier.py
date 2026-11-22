@@ -140,6 +140,16 @@ def _looks_like_appeal_over_proxy(normalized_text: str) -> bool:
     return has_parties and has_appeal_body
 
 
+def _looks_like_proxy_over_appeal(normalized_text: str) -> bool:
+    """Detect standalone proxies that mention KIO/appeal scope and lack appeal grounds/demands."""
+    folded = _strip_accents(normalized_text)
+    has_proxy_header = "pelnomocnictwo" in folded[:500] or any(
+        grant in folded[:900] for grant in ("udziela pelnomocnictwa", "udzielam pelnomocnictwa", "upowaznia", "niniejszym ustanawia")
+    )
+    has_appeal_body = any(marker in folded for marker in ("zarzut", "zarzuca", "wnosze o"))
+    return has_proxy_header and not has_appeal_body
+
+
 def _phrases_by_doc_type() -> dict[DocumentType, tuple[str, ...]]:
     """Load classification phrases from YAML configs, falling back to built-in defaults."""
     phrases: dict[DocumentType, tuple[str, ...]] = {}
@@ -205,6 +215,8 @@ def classify_document(
         doc_type = mapping.get(label, DocumentType.INNY)
         if doc_type == DocumentType.PELNOMOCNICTWO and _looks_like_appeal_over_proxy(text):
             return DocumentType.ODWOLANIE, score
+        if doc_type == DocumentType.ODWOLANIE and _looks_like_proxy_over_appeal(text):
+            return DocumentType.PELNOMOCNICTWO, score
         return doc_type, score
     except FileNotFoundError:
         return fallback_classify(text)
@@ -243,6 +255,8 @@ def fallback_classify(text: str) -> tuple[DocumentType, float]:
     confidence = min(0.95, 0.50 + 0.10 * count)
     if best_type == DocumentType.PELNOMOCNICTWO and _looks_like_appeal_over_proxy(normalized):
         return DocumentType.ODWOLANIE, confidence
+    if best_type == DocumentType.ODWOLANIE and _looks_like_proxy_over_appeal(normalized):
+        return DocumentType.PELNOMOCNICTWO, confidence
     return best_type, confidence
 
 
