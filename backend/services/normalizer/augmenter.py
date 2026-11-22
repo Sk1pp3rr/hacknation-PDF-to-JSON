@@ -512,11 +512,21 @@ def _augment_przelew(data: dict[str, Any], source_text: str) -> None:
     if pb.get("z_rachunku") is not None and pb.get("na_rachunek") is not None:
         return
     ordered = extract_accounts_in_order(source_text)
-    if len(ordered) == 2:
+    if len(ordered) >= 2:
         if pb.get("z_rachunku") is None:
             pb["z_rachunku"] = ordered[0]
         if pb.get("na_rachunek") is None:
             pb["na_rachunek"] = ordered[1]
+    elif len(ordered) == 1 and pb.get("z_rachunku") is None and pb.get("na_rachunek") is None:
+        only_acc = ordered[0]
+        digits = re.sub(r"\D", "", only_acc)
+        compact = re.sub(r"\s+", "", source_text)
+        pos = compact.find(digits)
+        ctx = compact[max(0, pos - 60) : pos].lower() if pos >= 0 else ""
+        if any(k in ctx for k in ("odbiorc", "narachunek", "beneficjent", "adresat")):
+            pb["na_rachunek"] = only_acc
+        else:
+            pb["z_rachunku"] = only_acc
 
 
 def augment_post_extraction(doc_type: DocumentType | str, data: dict[str, Any], source_text: str) -> dict[str, Any]:

@@ -38,6 +38,8 @@ _NEGATIVE_HEADER_MARKERS = (
     "krajowa izba odwolawcza w skladzie",
     "krajowa izba odwoławcza w składzie",
     "w imieniu rzeczypospolitej polskiej",
+    "potwierdzenie wykonania operacji kartowej",
+    "zakup przy uzyciu karty",
 )
 
 FALLBACK_PHRASES = {

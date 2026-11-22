@@ -130,3 +130,13 @@ ekstrakcja:
     )
     assert doc_type == "wezwanie"
     assert conf >= 0.62
+
+
+def test_classifier_rejects_card_operation_receipt_as_inny() -> None:
+    card_pdf = (
+        "mBank S.A.\nPOTWIERDZENIE WYKONANIA OPERACJI KARTOWEJ - DUPLIKAT\n"
+        "Nr Rachunku: 42 1140 2004 0000 3102 7881 9850\n"
+        "Rodzaj transakcji: ZAKUP PRZY UŻYCIU KARTY\nKwota operacji w PLN: -113,87"
+    )
+    doc_type, _ = classify_document(card_pdf)
+    assert doc_type == DocumentType.INNY

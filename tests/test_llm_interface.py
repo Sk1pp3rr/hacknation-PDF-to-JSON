@@ -1145,6 +1145,11 @@ def test_normalizes_all_caps_names_and_cities_to_title_case() -> None:
     assert strip_person_titles("radcy prawnego JAN KOWALSKI") == "Jan Kowalski"
     assert strip_person_titles("adwokata Anny Nowak, radca Prawnego") == "Anny Nowak"
 
+    single_acc_src = "Rachunek obciążany: 42 1140 2004 0000 3102 7881 9850\nKwota: 200,00 PLN"
+    single_acc_out = augment_post_extraction(DocumentType.PRZELEW, {"przelew_bankowy": {}}, single_acc_src)
+    assert single_acc_out["przelew_bankowy"]["z_rachunku"] == "42114020040000310278819850"
+    assert single_acc_out["przelew_bankowy"]["na_rachunek"] is None
+
 
 
 
