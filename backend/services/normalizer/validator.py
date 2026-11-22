@@ -333,7 +333,7 @@ def _normalize_przelew(data: dict[str, Any]) -> None:
     if "kwota" in pb:
         parsed_amount = _parse_amount(pb.get("kwota"))
         if parsed_amount is not None:
-            pb["kwota"] = round(parsed_amount, 2)
+            pb["kwota"] = round(abs(parsed_amount), 2)
         elif pb.get("kwota") is None:
             pb["kwota"] = None
 

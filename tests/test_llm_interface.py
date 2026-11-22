@@ -1105,6 +1105,13 @@ def test_augment_przelew_extracts_numer_transakcji_from_ref_labels() -> None:
     assert out1["przelew_bankowy"]["numer_transakcji"] == "CEN2604016344389"
     assert out2["przelew_bankowy"]["numer_transakcji"] == "CEN2603024646444"
 
+    norm_neg_kwota = validate_extraction(
+        DocumentType.PRZELEW,
+        {"przelew_bankowy": {"kwota": -17.0}},
+        "PRZELEW ELIXIR -17,00 PLN",
+    )
+    assert norm_neg_kwota.data["przelew_bankowy"]["kwota"] == 17.0
+
 
 
 
