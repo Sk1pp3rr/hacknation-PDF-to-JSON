@@ -1142,6 +1142,8 @@ def test_normalizes_all_caps_names_and_cities_to_title_case() -> None:
     )
     assert odw_out.data["OdwolanieKIO"]["miejscowosc"] == "Nakło nad Notecią"
     assert odw_out.data["Odwolujacy"][0]["pelnomocnik"][0]["imie_nazwisko"] == "Jan Kowalski"
+    assert strip_person_titles("radcy prawnego JAN KOWALSKI") == "Jan Kowalski"
+    assert strip_person_titles("adwokata Anny Nowak, radca Prawnego") == "Anny Nowak"
 
 
 

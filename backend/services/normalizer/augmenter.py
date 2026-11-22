@@ -39,7 +39,7 @@ _REP_ANCHOR_RE = re.compile(
 )
 _REP_STOP_RE = re.compile(r"(?i)\b(?:Zamawiaj[ąa]cy|Wykonawca\s+wybrany|dotyczy)\b")
 _LAWYER_NAME_RE = re.compile(
-    r"(?i)(?:r\.\s*pr\.|radc[aęy]\s+prawn(?:ego|ym|y)|adw\.|adwokat(?:a|owi)?)\s+"
+    r"(?i)(?:r\.\s*pr\.|radc[aąęy]\s+prawn(?:ego|emu|ym|y)|adw\.|adwokat(?:a|owi|em)?|mec\.|mecenas(?:a|owi|em)?)\s+"
     r"([A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]+\s+[A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż\-]+)"
 )
 _DOTS_LINE_RE = re.compile(r"^[\.\s_…]{5,}$")
@@ -66,10 +66,11 @@ _KIO_ADDRESSEE_LINE_RE = re.compile(
 )
 
 _LEADING_TITLE_RE = re.compile(
-    r"(?i)^(?:r\.\s*pr\.|radca\s+prawny|adw\.|adwokat|mec\.|mgr|dr|prof\.)\s+"
+    r"(?i)^(?:r\.\s*pr\.|radc[aąęy]\s+prawn(?:ego|emu|ym|y)|adw\.|adwokat(?:a|owi|em)?|"
+    r"mec\.|mecenas(?:a|owi|em)?|dr\s+hab\.|mgr\s+in[żz]\.|mgr|dr|prof\.)\s+"
 )
 _TRAILING_TITLE_RE = re.compile(
-    r"(?i),?\s*(?:r\.\s*pr\.|radca\s+prawny|adw\.|adwokat|mec\.)$"
+    r"(?i),?\s*(?:r\.\s*pr\.|radc[aąęy]\s+prawn(?:ego|emu|ym|y)|adw\.|adwokat(?:a|owi|em)?|mec\.|mecenas(?:a|owi|em)?)$"
 )
 
 

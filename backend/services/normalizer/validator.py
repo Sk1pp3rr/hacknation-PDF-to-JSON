@@ -339,6 +339,13 @@ def _normalize_przelew(data: dict[str, Any]) -> None:
 
 
 _CITY_LOWER_PARTICLES = {"nad", "pod", "w", "we", "z", "ze", "na", "u", "koło", "kolo"}
+_PERSON_LEADING_TITLE_RE = re.compile(
+    r"(?i)^(?:r\.\s*pr\.|radc[aąęy]\s+prawn(?:ego|emu|ym|y)|adw\.|adwokat(?:a|owi|em)?|"
+    r"mec\.|mecenas(?:a|owi|em)?|dr\s+hab\.|mgr\s+in[żz]\.|mgr|dr|prof\.)\s+"
+)
+_PERSON_TRAILING_TITLE_RE = re.compile(
+    r"(?i),?\s*(?:r\.\s*pr\.|radc[aąęy]\s+prawn(?:ego|emu|ym|y)|adw\.|adwokat(?:a|owi|em)?|mec\.|mecenas(?:a|owi|em)?)$"
+)
 
 
 def _title_token(token: str) -> str:
@@ -356,10 +363,16 @@ def _title_token(token: str) -> str:
 
 
 def normalize_person_name(value: Any) -> Any:
-    """Normalize ALL-CAPS or lowercase person names (e.g. 'JAN KOWALSKI' -> 'Jan Kowalski')."""
+    """Strip inflected legal titles and normalize ALL-CAPS/lowercase person names to Title Case."""
     if not isinstance(value, str):
         return value
     cleaned = re.sub(r"\s+", " ", value).strip()
+    while cleaned:
+        updated = _PERSON_LEADING_TITLE_RE.sub("", cleaned).strip()
+        updated = _PERSON_TRAILING_TITLE_RE.sub("", updated).strip(" ,")
+        if updated == cleaned:
+            break
+        cleaned = updated
     if not cleaned:
         return None
     if not (cleaned.isupper() or cleaned.islower() or any(w.isupper() and len(w) > 1 for w in cleaned.split())):
