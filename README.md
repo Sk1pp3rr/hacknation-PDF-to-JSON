@@ -1,8 +1,37 @@
 # Odwołania2json (hacknation-PDF-to-JSON)
 
-Aplikacja webowa do automatycznej ekstrakcji danych ze spraw odwoławczych (odwołania, pełnomocnictwa, dowody wpłaty) z plików PDF do kanonicznego modelu JSON zgodnego ze specyfikacją UZP.
+Aplikacja webowa i wsadowe narzędzie CLI do automatycznej ekstrakcji danych ze spraw odwoławczych KIO (`odwolanie`, `pelnomocnictwo`, `przelew` oraz bezpieczne odrzucanie dokumentów spoza zakresu `inny -> {}`) z plików PDF do kanonicznego modelu JSON zgodnego ze specyfikacją UZP.
 
-Projekt oparty na komponentach Open Source oraz europejskim API LLM (np. Mistral AI / Scaleway UE).
+Projekt oparty w 100% na komponentach **Open Source** działających lokalnie na **CPU** oraz europejskim/zewnętrznym API LLM kompatybilnym ze standardem OpenAI.
+
+## Architektura i przepływ przetwarzania
+
+```text
+PDF (cyfrowy lub skan)
+   │
+   ▼
+[1. Parser & OCR]           pypdf (warstwa tekstowa) + pypdfium2 + Tesseract (`pol`) na CPU
+   │
+   ▼
+[2. Klasyfikator 4-klasowy] TF-IDF + LinearSVC + reguły z YAML (`odwolanie`, `pelnomocnictwo`, `przelew`, `inny`)
+   │
+   ├── inny ──────────────────────────────────────────────► `{}` (bezpieczne odrzucenie bez halucynacji)
+   │
+   ▼
+[3. Ekstraktor LLM]         OpenAI-compatible API, strict JSON Schema, `section_swarm`, surgical retry
+   │
+   ▼
+[4. Normalizator & Walidator] Sumy kontrolne (IBAN, NIP, PESEL, REGON), korekty OCR, formaty dat/kwot
+   │
+   ▼
+[5. Wynik]                  Czysty JSON UZP (`data`) + osobne metadane audytowe (`meta`: cytaty, bbox, pewność, tokeny)
+```
+
+### Kluczowe założenia projektowe
+- **100% Open Source & CPU-only:** `FastAPI`, `pypdf`, `pypdfium2`, `pytesseract` + `tesseract-ocr-pol`, `scikit-learn`, `pydantic`, `httpx`, `React` + `Vite` (bez lokalnego GPU).
+- **Config-Driven (bez hardcodowania):** definicje klas dokumentów, frazy klasyfikacyjne, podpowiedzi promptów i reguły normalizacji są ładowane dynamicznie z plików YAML w [`backend/config/documents/`](backend/config/documents/).
+- **Niezależność od dostawcy (Adaptery):** zmiana dostawcy lub modelu LLM odbywa się wyłącznie przez `.env` (`LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`), a silnik OCR implementuje abstrakcję `OcrEngine`.
+- **Separacja danych UZP i metadanych:** wynikowy plik `.json` zawiera wyłącznie dozwolone pola schematu UZP; ślad audytowy (klasa, pewność, cytaty źródłowe, współrzędne na stronie PDF, błędy/ostrzeżenia walidacji, czas i tokeny) jest oddzielony w sekcji `meta`.
 
 ## Struktura repozytorium
 
@@ -45,6 +74,7 @@ Projekt oparty na komponentach Open Source oraz europejskim API LLM (np. Mistral
 ├── Dockerfile                       # Obraz CPU-only (Python + Tesseract pol + zbudowany frontend React)
 ├── docker-compose.yml               # Usługi `app` (GUI + API) oraz `processor` (wsadowe CLI)
 ├── RUN.md                           # Instrukcja bezobsługowego uruchomienia na serwerze (/opt/solution)
+└── Uruchom_Aplikacje.bat            # Jednoklikowy launcher GUI dla użytkownika końcowego (Windows)
 ├── .env.example                     # Przykładowa konfiguracja zmiennych środowiskowych
 ├── requirements.txt                 # Lista zależności Pythona (CPU-only, Open Source)
 └── pyproject.toml                   # Zależności i konfiguracja projektu
@@ -79,6 +109,17 @@ docker compose build
 docker compose up -d app          # Aplikacja webowa (GUI + API) na portach 80 i 8000
 docker compose run --rm processor # Bezobsługowe przetwarzanie input/ -> output/
 ```
+
+Dla użytkownika końcowego na Windows (bez terminala) wystarczy podwójne kliknięcie w [`Uruchom_Aplikacje.bat`](Uruchom_Aplikacje.bat) — skrypt uruchamia lokalny serwer i otwiera interfejs webowy w przeglądarce (`http://127.0.0.1:8000`).
+
+### Endpointy HTTP (FastAPI)
+
+| Metoda i ścieżka | Opis |
+| --- | --- |
+| `GET /health` | Status usługi (`{"status": "ok"}`) używany m.in. przez `healthcheck` Dockera |
+| `POST /api/extract` | Szybka ekstrakcja i klasyfikacja przesłanego pliku PDF (`ExtractionResult`) |
+| `POST /api/extract/document` | Pełne przetwarzanie pojedynczego PDF z podglądem stron i cytatami (`meta.evidence`, `meta.page_images`) |
+| `POST /api/extract/batch` | Przetwarzanie wsadowe wielu plików PDF w jednym żądaniu |
 
 ## Szybki start lokalny (tryb developerski)
 
