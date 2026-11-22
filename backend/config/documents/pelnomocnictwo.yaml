@@ -33,7 +33,7 @@ ekstrakcja:
     - "mocodawca[].data.nazwa to pełna nazwa firmy/podmiotu mocodawcy (np. 'Belmoria Rozwiązania S.A.'), nigdy numer KRS ani NIP."
     - "mocodawca[].data.typ to 'osoba_prawna' lub 'osoba_fizyczna'; dla osoby prawnej imie_nazwisko=null."
     - "podpisujacy to wyłącznie osoby podpisujące w imieniu Mocodawcy (np. Prezes Zarządu, Prokurent, Wspólnik) — NIGDY nie wpisuj tam pełnomocników z sekcji 'Pełnomocnictwo przyjmuję'."
-    - "pelnomocnicy[].imie_nazwisko podawaj w mianowniku, bez tytułów zawodowych."
+    - "pelnomocnicy[].imie_nazwisko oraz podpisujacy[].imie_nazwisko podawaj w mianowniku, bez tytułów zawodowych i w formacie Imię Nazwisko (nie WIELKIMI LITERAMI)."
 
 normalizacja:
   wymagane_pola:

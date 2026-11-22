@@ -338,11 +338,62 @@ def _normalize_przelew(data: dict[str, Any]) -> None:
             pb["kwota"] = None
 
 
+_CITY_LOWER_PARTICLES = {"nad", "pod", "w", "we", "z", "ze", "na", "u", "koło", "kolo"}
+
+
+def _title_token(token: str) -> str:
+    """Title-case an ALL-CAPS or all-lowercase token (including hyphenated parts), preserving mixed case."""
+    parts = token.split("-")
+    out: list[str] = []
+    for part in parts:
+        if not part:
+            out.append(part)
+        elif part.isupper() or part.islower():
+            out.append(part[0].upper() + part[1:].lower())
+        else:
+            out.append(part)
+    return "-".join(out)
+
+
+def normalize_person_name(value: Any) -> Any:
+    """Normalize ALL-CAPS or lowercase person names (e.g. 'JAN KOWALSKI' -> 'Jan Kowalski')."""
+    if not isinstance(value, str):
+        return value
+    cleaned = re.sub(r"\s+", " ", value).strip()
+    if not cleaned:
+        return None
+    if not (cleaned.isupper() or cleaned.islower() or any(w.isupper() and len(w) > 1 for w in cleaned.split())):
+        return cleaned
+    return " ".join(_title_token(w) for w in cleaned.split())
+
+
+def normalize_city_name(value: Any) -> Any:
+    """Normalize ALL-CAPS or lowercase Polish city names (e.g. 'WARSZAWA' -> 'Warszawa')."""
+    if not isinstance(value, str):
+        return value
+    cleaned = re.sub(r"\s+", " ", value).strip()
+    if not cleaned:
+        return None
+    if not (cleaned.isupper() or cleaned.islower()):
+        return cleaned
+    words = cleaned.split()
+    out: list[str] = []
+    for idx, word in enumerate(words):
+        low = word.lower()
+        if idx > 0 and low in _CITY_LOWER_PARTICLES:
+            out.append(low)
+        else:
+            out.append(_title_token(word))
+    return " ".join(out)
+
+
 def _normalize_odwolanie(data: dict[str, Any]) -> None:
     kio = data.get("OdwolanieKIO")
     if isinstance(kio, dict):
         kio["data"] = normalize_date_str(kio.get("data"))
         kio["czynnosc_dzien"] = normalize_date_str(kio.get("czynnosc_dzien"))
+        if "miejscowosc" in kio:
+            kio["miejscowosc"] = normalize_city_name(kio.get("miejscowosc"))
         powod_id = kio.get("czynnosc_powod_id")
         if isinstance(powod_id, str) and powod_id.isdigit():
             powod_id = int(powod_id)
@@ -378,6 +429,9 @@ def _normalize_odwolanie(data: dict[str, Any]) -> None:
             else:
                 reps = []
             cleaned_reps = [r for r in reps if isinstance(r, dict) and any(v is not None for v in r.values())]
+            for r in cleaned_reps:
+                if "imie_nazwisko" in r:
+                    r["imie_nazwisko"] = normalize_person_name(r.get("imie_nazwisko"))
             item["pelnomocnik"] = cleaned_reps
             has_rep = len(cleaned_reps) > 0
             if item.get("przez-pelnomocnika") is None:
@@ -409,11 +463,22 @@ def _normalize_pelnomocnictwo(data: dict[str, Any]) -> None:
                 entity["krs"] = _digits_only(entity.get("krs"))
                 if entity.get("typ") == "osoba_prawna":
                     entity["imie_nazwisko"] = None
+                elif "imie_nazwisko" in entity:
+                    entity["imie_nazwisko"] = normalize_person_name(entity.get("imie_nazwisko"))
+            signers = entry.get("podpisujacy")
+            if isinstance(signers, list):
+                for signer in signers:
+                    if isinstance(signer, dict) and "imie_nazwisko" in signer:
+                        signer["imie_nazwisko"] = normalize_person_name(signer.get("imie_nazwisko"))
 
     pelnomocnicy = data.get("pelnomocnicy")
     if isinstance(pelnomocnicy, list):
         for person in pelnomocnicy:
-            if isinstance(person, dict) and person.get("pesel") is not None:
+            if not isinstance(person, dict):
+                continue
+            if "imie_nazwisko" in person:
+                person["imie_nazwisko"] = normalize_person_name(person.get("imie_nazwisko"))
+            if person.get("pesel") is not None:
                 person["pesel"] = _digits_only(person["pesel"])
 
 

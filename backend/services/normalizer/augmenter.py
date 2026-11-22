@@ -21,7 +21,9 @@ from backend.services.normalizer.validator import (
     extract_accounts_in_order,
     extract_identifier_hints,
     is_valid_pesel,
+    normalize_city_name,
     normalize_date_str,
+    normalize_person_name,
 )
 
 _ENTITY_WINDOW_STOP_RE = re.compile(
@@ -83,7 +85,7 @@ def extract_header_city_and_date(text: str) -> tuple[str | None, str | None]:
             continue
         iso_date = normalize_date_str(m.group("date"))
         if iso_date and re.match(r"^\d{4}-\d{2}-\d{2}$", iso_date):
-            return city, iso_date
+            return normalize_city_name(city) or city, iso_date
     return None, None
 
 
@@ -125,7 +127,7 @@ def strip_person_titles(name: str | None) -> str | None:
         if updated == cleaned:
             break
         cleaned = updated
-    return cleaned or None
+    return normalize_person_name(cleaned) or None
 
 
 def _entity_keys(entity: dict[str, Any]) -> tuple[set[str], set[str], set[str]]:
@@ -312,7 +314,11 @@ def _augment_odwolanie(data: dict[str, Any], source_text: str) -> None:
     header_text = _header_slice_only(source_text)
     rep_mail = _extract_representative_mail(header_text)
     header_lawyers = list(
-        dict.fromkeys(re.sub(r"\s+", " ", m.group(1)).strip() for m in _LAWYER_NAME_RE.finditer(header_text))
+        dict.fromkeys(
+            norm
+            for m in _LAWYER_NAME_RE.finditer(header_text)
+            if (norm := normalize_person_name(re.sub(r"\s+", " ", m.group(1)).strip()))
+        )
     )
 
     odwolujacy = data.get("Odwolujacy")

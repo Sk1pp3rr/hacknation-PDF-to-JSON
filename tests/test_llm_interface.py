@@ -1113,5 +1113,36 @@ def test_augment_przelew_extracts_numer_transakcji_from_ref_labels() -> None:
     assert norm_neg_kwota.data["przelew_bankowy"]["kwota"] == 17.0
 
 
+def test_normalizes_all_caps_names_and_cities_to_title_case() -> None:
+    pel_out = validate_extraction(
+        DocumentType.PELNOMOCNICTWO,
+        {
+            "mocodawca": [
+                {
+                    "data": {"imie_nazwisko": None, "krs": None, "nazwa": "ACME S.A.", "nip": None, "typ": "osoba_prawna"},
+                    "podpisujacy": [{"imie_nazwisko": "OLIWIA KACZMAREK"}],
+                }
+            ],
+            "pelnomocnicy": [{"imie_nazwisko": "ANNA NOWAK-KOWALSKA", "pesel": None}],
+        },
+        "ACME S.A. OLIWIA KACZMAREK ANNA NOWAK-KOWALSKA",
+    )
+    assert pel_out.data["mocodawca"][0]["podpisujacy"][0]["imie_nazwisko"] == "Oliwia Kaczmarek"
+    assert pel_out.data["pelnomocnicy"][0]["imie_nazwisko"] == "Anna Nowak-Kowalska"
+
+    odw_out = validate_extraction(
+        DocumentType.ODWOLANIE,
+        {
+            "OdwolanieKIO": {"data": "2026-03-20", "czynnosc_dzien": None, "czynnosc_powod_id": 4, "miejscowosc": "NAKŁO NAD NOTECIĄ"},
+            "Odwolujacy": [{"krs": None, "nazwa": "Firma X", "nip": None, "regon": None, "przez-pelnomocnika": 1, "pelnomocnik": [{"imie_nazwisko": "JAN KOWALSKI", "nazwa": "Kancelaria", "mail": None}]}],
+            "Zamawiajacy": [{"krs": None, "nazwa": "Gmina Y", "nip": None, "regon": None, "prowadzacy_postepowanie": None}],
+            "ZamowieniePubliczne": {"numer_bzp": None, "numer_postepowania": None, "numer_ted": None, "tytul": "Test"},
+        },
+        "NAKŁO NAD NOTECIĄ Firma X Gmina Y JAN KOWALSKI Kancelaria Test",
+    )
+    assert odw_out.data["OdwolanieKIO"]["miejscowosc"] == "Nakło nad Notecią"
+    assert odw_out.data["Odwolujacy"][0]["pelnomocnik"][0]["imie_nazwisko"] == "Jan Kowalski"
+
+
 
 
