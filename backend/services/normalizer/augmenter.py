@@ -501,6 +501,56 @@ def _extract_transaction_number(source_text: str) -> str | None:
     return None
 
 
+_TX_TITLE_LABEL_RE = re.compile(
+    r"(?im)^[\s.\-•'\"]*(?:[tq]ytu[łl](?:\s+(?:przelewu|operacji|transakcji))?|opis(?:\s+(?:operacji|transakcji|przelewu))?)\s*(?:[:;]|(?:\s+[y:]))?\s*(.*)$"
+)
+_TX_TITLE_STOP_RE = re.compile(
+    r"(?i)^(?:typ\s+transakcji|kwota\b|nr\s*ref|numer\s+referencyjn|status\b|kana[łl]\b|tryb\b|"
+    r"dokument\s+jest\s+wydrukiem|zrealizowano\b|potwierdzenie\s+ma\s+charakter|wp[łl]yn[ęe][łl]o\b|"
+    r"bank\s+[\w\s]+s\.a\.|data\s+(?:operacji|waluty|ksi[ęe]gowania|transakcji)|rachunek\b|z\s+rachunku|na\s+rachunek)"
+)
+_BANK_OP_HEADER_TYTUL_RE = re.compile(
+    r"(?i)^[\"']?(?:przelew\s+(?:elixir|krajowy|wewn[ęe]trzny|z\s+rachunku|sorbnet|natychmiastowy)|"
+    r"zlecenie\s+przelewu)\b"
+)
+
+
+def _extract_transfer_title(source_text: str) -> str | None:
+    lines = [line.strip() for line in source_text.splitlines()]
+    for idx, line in enumerate(lines):
+        if not line or re.match(r"(?i)^opis\s+kwota$", line):
+            continue
+        m = _TX_TITLE_LABEL_RE.match(line)
+        if not m:
+            continue
+        first = m.group(1).strip(" .:;-")
+        # Ignore standalone single-letter OCR noise like `Tytuł y`
+        parts: list[str] = [] if len(first) <= 1 and first.isalpha() else ([first] if first else [])
+        for nxt in lines[idx + 1 : idx + 8]:
+            if not nxt:
+                if parts:
+                    continue
+                continue
+            if _TX_TITLE_STOP_RE.match(nxt):
+                break
+            cleaned_nxt = re.sub(r"\s+[.;:]$", "", nxt).strip()
+            if cleaned_nxt:
+                parts.append(cleaned_nxt)
+        joined = re.sub(r"\s+", " ", " ".join(parts)).strip(" .;:")
+        if len(joined) >= 6 and not _BANK_OP_HEADER_TYTUL_RE.match(joined):
+            return joined
+    return None
+
+
+def _is_bank_header_tytul(value: Any) -> bool:
+    if value is None:
+        return True
+    if not isinstance(value, str):
+        return False
+    stripped = value.strip()
+    return not stripped or bool(_BANK_OP_HEADER_TYTUL_RE.match(stripped))
+
+
 def _augment_przelew(data: dict[str, Any], source_text: str) -> None:
     pb = data.get("przelew_bankowy")
     if not isinstance(pb, dict):
@@ -509,6 +559,10 @@ def _augment_przelew(data: dict[str, Any], source_text: str) -> None:
     pb.setdefault("na_rachunek", None)
     if pb.get("numer_transakcji") is None:
         pb["numer_transakcji"] = _extract_transaction_number(source_text)
+    if _is_bank_header_tytul(pb.get("tytul")):
+        extracted_title = _extract_transfer_title(source_text)
+        if extracted_title:
+            pb["tytul"] = extracted_title
     if pb.get("z_rachunku") is not None and pb.get("na_rachunek") is not None:
         return
     ordered = extract_accounts_in_order(source_text)

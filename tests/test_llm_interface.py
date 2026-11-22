@@ -1150,6 +1150,19 @@ def test_normalizes_all_caps_names_and_cities_to_title_case() -> None:
     assert single_acc_out["przelew_bankowy"]["z_rachunku"] == "42114020040000310278819850"
     assert single_acc_out["przelew_bankowy"]["na_rachunek"] is None
 
+    ocr_tytul_src = (
+        "Data Opis Kwota\n"
+        "Data operacji . \"PRZELEW ELIXIR - ONLINE +10 000.00 PLN\n"
+        ". qytuł: Wpis od odwołania, ZP.271.59.2026, MUZEUM REGIONALNE W OLSZANOWIE\n"
+        "Dokument jest wydrukiem komputerowym"
+    )
+    ocr_tytul_out = augment_post_extraction(
+        DocumentType.PRZELEW,
+        {"przelew_bankowy": {"tytul": "PRZELEW ELIXIR - ONLINE ) -17,00 PLN"}},
+        ocr_tytul_src,
+    )
+    assert ocr_tytul_out["przelew_bankowy"]["tytul"] == "Wpis od odwołania, ZP.271.59.2026, MUZEUM REGIONALNE W OLSZANOWIE"
+
 
 
 
