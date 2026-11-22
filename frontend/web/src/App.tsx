@@ -1125,7 +1125,9 @@ export default function App() {
     <div className="app">
       <header className="header">
         <div className="brand">
-          <div className="logo">{"{ }"}</div>
+          <div className="logo">
+            <img src="/logo.png" alt="Odwołania2json" className="logo-img" />
+          </div>
           <div>
             <h1>Odwołania2json</h1>
             <p className="subtitle">Ekstrakcja danych ze spraw odwoławczych KIO · PDF → JSON UZP</p>
