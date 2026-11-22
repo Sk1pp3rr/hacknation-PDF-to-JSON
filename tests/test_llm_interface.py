@@ -1163,6 +1163,17 @@ def test_normalizes_all_caps_names_and_cities_to_title_case() -> None:
     )
     assert ocr_tytul_out["przelew_bankowy"]["tytul"] == "Wpis od odwołania, ZP.271.59.2026, MUZEUM REGIONALNE W OLSZANOWIE"
 
+    ocr_mail_src = (
+        "Odwołujący: Firma X\nreprezentowana przez: r. pr. Aleksandra Rybak\n"
+        "e-mail: a.rybakQrybak-kancelaria.example\nZamawiający: Gmina Y"
+    )
+    ocr_mail_out = augment_post_extraction(
+        DocumentType.ODWOLANIE,
+        {"Odwolujacy": [{"nazwa": "Firma X", "przez-pelnomocnika": 1, "pelnomocnik": [{"imie_nazwisko": "Aleksandra Rybak", "mail": None}]}]},
+        ocr_mail_src,
+    )
+    assert ocr_mail_out["Odwolujacy"][0]["pelnomocnik"][0]["mail"] == "a.rybak@rybak-kancelaria.example"
+
 
 
 

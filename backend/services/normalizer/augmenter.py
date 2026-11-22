@@ -214,6 +214,11 @@ def _bind_entity_identifiers(text: str, nazwa: str | None) -> tuple[str | None, 
     )
 
 
+_OCR_EMAIL_RE = re.compile(
+    r"(?i)\b(?:e-?mail|mail)\s*[:;]\s*([a-z0-9._+-]+?)\s*[Q©®]\s*([a-z0-9-]+(?:\.[a-z0-9-]+)+)"
+)
+
+
 def _extract_representative_mail(header_text: str) -> str | None:
     norm_hdr = re.sub(r"\s+", " ", header_text)
     m_rep = _REP_ANCHOR_RE.search(norm_hdr)
@@ -224,7 +229,12 @@ def _extract_representative_mail(header_text: str) -> str | None:
     if stop:
         sub = sub[: stop.start()]
     em = _EMAIL_RE.search(sub)
-    return em.group(0) if em else None
+    if em:
+        return em.group(0)
+    ocr_em = _OCR_EMAIL_RE.search(sub)
+    if ocr_em:
+        return f"{ocr_em.group(1)}@{ocr_em.group(2)}"
+    return None
 
 
 def _fill_missing_entity_ids(entity: dict[str, Any], text: str, *, include_regon: bool = True) -> None:
