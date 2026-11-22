@@ -9,6 +9,8 @@ services:
     ports:
       - "8000:8000"
       - "80:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./input:/app/input
       - ./output:/app/output
@@ -24,6 +26,8 @@ services:
     profiles: ["cli"]
     env_file:
       - .env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./input:/app/input
       - ./output:/app/output
@@ -36,3 +40,19 @@ services:
         "--output",
         "/app/output",
       ]
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: hacknation-ollama
+    profiles: ["local-llm"]
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    environment:
+      - OLLAMA_NUM_PARALLEL=2
+      - OLLAMA_KEEP_ALIVE=30m
+    volumes:
+      - ollama_data:/root/.ollama
+
+volumes:
+  ollama_data:
