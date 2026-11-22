@@ -124,7 +124,7 @@ npm run dev
 
 Następnie otwórz w przeglądarce: **http://localhost:5173**
 - Przeciągnij jeden lub wiele plików PDF (np. z `dane/przyklad_01/odwolanie.pdf`).
-- W górnym pasku możesz przełączać **tryb dzienny/nocny** oraz liczbę dokumentów przetwarzanych **równolegle (`1 / 2 / 4 / 8`)**.
+- W górnym pasku możesz przełączać **tryb dzienny/nocny**; równoległość przetwarzania kolejki dobiera się automatycznie do liczby wrzuconych plików.
 - W zakładce **„Cytaty i Eksplorator PDF”** kliknięcie pola podświetla fragment w dokumencie PDF (z przybliżaniem i przesuwaniem myszką) oraz pozwala od razu poprawić wartość inline.
 - W zakładce **„Edytuj pola”** możesz wygodnie poprawić wszystkie pola w formularzu (lub w surowym JSON-ie) i pobrać wynik pojedynczo albo hurtowo jako **ZIP (`wyniki_json.zip`)**.
 

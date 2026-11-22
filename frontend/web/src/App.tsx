@@ -1065,13 +1065,19 @@ function ResultView({
   );
 }
 
+function getAutoConcurrency(pendingCount: number): number {
+  if (pendingCount <= 1) return 1;
+  if (pendingCount <= 3) return 2;
+  if (pendingCount <= 8) return 4;
+  return 6;
+}
+
 export default function App() {
   const { theme, toggle } = useTheme();
   const [items, setItems] = useState<QueueItem[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const [online, setOnline] = useState<boolean | null>(null);
-  const [concurrency, setConcurrency] = useState<number>(2);
   const inputRef = useRef<HTMLInputElement>(null);
   const activeIds = useRef<Set<string>>(new Set());
 
@@ -1083,7 +1089,11 @@ export default function App() {
     setItems((prev) => prev.map((it) => (it.id === id ? { ...it, ...patch } : it)));
 
   useEffect(() => {
-    const slots = Math.max(0, concurrency - activeIds.current.size);
+    const pendingCount = items.filter(
+      (it) => it.status === "queued" || it.status === "processing",
+    ).length;
+    const targetConcurrency = getAutoConcurrency(pendingCount);
+    const slots = Math.max(0, targetConcurrency - activeIds.current.size);
     if (slots === 0) return;
     const queued = items.filter((it) => it.status === "queued" && !activeIds.current.has(it.id)).slice(0, slots);
     if (!queued.length) return;
@@ -1099,7 +1109,7 @@ export default function App() {
           setItems((prev) => [...prev]);
         });
     }
-  }, [items, concurrency]);
+  }, [items]);
 
   const addFiles = useCallback((files: FileList | File[]) => {
     const pdfs = Array.from(files).filter((f) => f.type === "application/pdf" || /\.pdf$/i.test(f.name));
@@ -1122,15 +1132,6 @@ export default function App() {
           </div>
         </div>
         <div className="header-right">
-          <label className="concurrency-select" title="Liczba dokumentów przetwarzanych równolegle">
-            <span>Równolegle:</span>
-            <select value={concurrency} onChange={(e) => setConcurrency(Number(e.target.value))}>
-              <option value={1}>1</option>
-              <option value={2}>2</option>
-              <option value={4}>4</option>
-              <option value={8}>8</option>
-            </select>
-          </label>
           <span className={`status-dot ${online ? "on" : online === false ? "off" : ""}`} />
           <span className="status-text">{online ? "API online" : online === false ? "API offline" : "…"}</span>
           <button className="icon-btn" onClick={toggle} aria-label="Przełącz motyw" title={theme === "dark" ? "Tryb dzienny" : "Tryb nocny"}>
