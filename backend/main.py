@@ -90,6 +90,8 @@ async def _process_uploaded_pdf(filename: str, content: bytes) -> dict[str, Any]
             "elapsed_seconds": round(elapsed, 2),
             "text_length": len(parsed.text),
             "page_count": parsed.page_count,
+            "ocr_pages": parsed.ocr_pages,
+            "ocr_error": parsed.ocr_error,
             "pages": parsed.pages,
             "page_images": page_images,
             "usage": outcome.usage.model_dump(),

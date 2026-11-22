@@ -29,6 +29,8 @@ export interface ExtractionMeta {
   elapsed_seconds: number;
   text_length: number;
   page_count?: number;
+  ocr_pages?: number[];
+  ocr_error?: string | null;
   pages?: string[];
   page_images?: string[];
   usage: TokenUsage;

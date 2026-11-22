@@ -329,6 +329,7 @@ h1 { font-size: 16px; margin: 0; font-weight: 600; }
   font-family: ui-monospace, "JetBrains Mono", Consolas, monospace; resize: vertical;
 }
 .btn-sm { padding: 5px 10px; font-size: 12px; }
+.btn-download-all { width: 100%; margin-bottom: 10px; text-align: center; font-weight: 600; }
 
 @media (max-width: 1100px) {
   .quotes-split { grid-template-columns: 1fr; height: auto; }

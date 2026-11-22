@@ -121,6 +121,87 @@ function downloadJson(name: string, data: unknown) {
   URL.revokeObjectURL(url);
 }
 
+const CRC_TABLE = (() => {
+  const table = new Uint32Array(256);
+  for (let i = 0; i < 256; i++) {
+    let c = i;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    table[i] = c >>> 0;
+  }
+  return table;
+})();
+
+function crc32(bytes: Uint8Array): number {
+  let crc = 0xffffffff;
+  for (let i = 0; i < bytes.length; i++) {
+    crc = CRC_TABLE[(crc ^ bytes[i]) & 0xff] ^ (crc >>> 8);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function downloadAllJsonZip(doneItems: QueueItem[]) {
+  const enc = new TextEncoder();
+  const used = new Map<string, number>();
+  const localParts: Uint8Array[] = [];
+  const centralParts: Uint8Array[] = [];
+  let offset = 0;
+
+  for (const item of doneItems) {
+    const base = item.file.name.replace(/\.pdf$/i, "");
+    const count = (used.get(base) ?? 0) + 1;
+    used.set(base, count);
+    const filename = count === 1 ? `${base}.json` : `${base}_${count}.json`;
+    const nameBytes = enc.encode(filename);
+    const dataBytes = enc.encode(formatUzpJson(item.result!.data) + "\n");
+    const crc = crc32(dataBytes);
+
+    const local = new Uint8Array(30 + nameBytes.length);
+    const lv = new DataView(local.buffer);
+    lv.setUint32(0, 0x04034b50, true);
+    lv.setUint16(4, 20, true);
+    lv.setUint16(6, 0x0800, true);
+    lv.setUint32(14, crc, true);
+    lv.setUint32(18, dataBytes.length, true);
+    lv.setUint32(22, dataBytes.length, true);
+    lv.setUint16(26, nameBytes.length, true);
+    local.set(nameBytes, 30);
+
+    const central = new Uint8Array(46 + nameBytes.length);
+    const cv = new DataView(central.buffer);
+    cv.setUint32(0, 0x02014b50, true);
+    cv.setUint16(4, 20, true);
+    cv.setUint16(6, 20, true);
+    cv.setUint16(8, 0x0800, true);
+    cv.setUint32(16, crc, true);
+    cv.setUint32(20, dataBytes.length, true);
+    cv.setUint32(24, dataBytes.length, true);
+    cv.setUint16(28, nameBytes.length, true);
+    cv.setUint32(42, offset, true);
+    central.set(nameBytes, 46);
+
+    localParts.push(local, dataBytes);
+    centralParts.push(central);
+    offset += local.length + dataBytes.length;
+  }
+
+  const centralSize = centralParts.reduce((acc, p) => acc + p.length, 0);
+  const eocd = new Uint8Array(22);
+  const ev = new DataView(eocd.buffer);
+  ev.setUint32(0, 0x06054b50, true);
+  ev.setUint16(8, doneItems.length, true);
+  ev.setUint16(10, doneItems.length, true);
+  ev.setUint32(12, centralSize, true);
+  ev.setUint32(16, offset, true);
+
+  const blob = new Blob([...localParts, ...centralParts, eocd] as BlobPart[], { type: "application/zip" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "wyniki_json.zip";
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 function formatJsonKey(fieldPath: string): string {
   const leaf = fieldPath.split(".").pop() ?? fieldPath;
   return leaf.replace(/\[\d+\]$/, "");
@@ -220,7 +301,12 @@ function QuotesWithPdfView({
                 <div
                   key={i}
                   className={`evidence-card clickable ${isSelected ? "active" : ""}`}
-                  onClick={() => setSelectedIdx(i)}
+                  onClick={() => {
+                    setSelectedIdx(i);
+                    if ((ev.rects?.length ?? 0) === 0 && pages.some((p) => p.trim().length > 0)) {
+                      setViewMode("text");
+                    }
+                  }}
                 >
                   <div className="evidence-header">
                     <span className="evidence-field" title={ev.field}>"{formatJsonKey(ev.field)}"</span>
@@ -699,7 +785,13 @@ function ResultView({
         </div>
       </div>
 
-      {isNegative && (
+      {meta.ocr_error && (
+        <div className="alert alert-warn">
+          <strong>OCR niedostępny lokalnie:</strong> {meta.ocr_error}. Na serwerze Docker / Azure z paczką{" "}
+          <code>tesseract-ocr-pol</code> skany są odczytywane automatycznie.
+        </div>
+      )}
+      {isNegative && !meta.ocr_error && (
         <div className="alert alert-info">Dokument rozpoznany jako spoza zakresu — nie wyekstrahowano danych.</div>
       )}
       {meta.validation_errors.length > 0 && (
@@ -861,6 +953,15 @@ export default function App() {
                   Wyczyść
                 </button>
               </div>
+              {items.some((i) => i.status === "done") && (
+                <button
+                  type="button"
+                  className="btn btn-download-all"
+                  onClick={() => downloadAllJsonZip(items.filter((i) => i.status === "done" && i.result))}
+                >
+                  Pobierz wszystkie JSON-y ({items.filter((i) => i.status === "done").length})
+                </button>
+              )}
               <ul className="file-list">
                 {items.map((it) => (
                   <li key={it.id} className={`file-item ${it.id === selectedId ? "selected" : ""}`} onClick={() => setSelectedId(it.id)}>
