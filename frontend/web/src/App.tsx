@@ -9,7 +9,75 @@ interface QueueItem {
   file: File;
   status: ItemStatus;
   result?: ExtractionResponse;
+  originalData?: Record<string, unknown>;
   error?: string;
+}
+
+const CZYNNOSC_OPIS_BY_ID: Record<number, string> = {
+  1: "Decyzja o odrzuceniu oferty",
+  2: "Ogłoszenie wyboru oferty",
+  3: "Decyzja o wykluczeniu wykonawcy",
+  4: "Publikacja specyfikacji warunków zamówienia (SWZ)",
+  5: "Modyfikacja treści SWZ",
+  6: "Odpowiedzi/wyjaśnienia do SWZ",
+  7: "Zaniechanie odrzucenia oferty",
+  8: "Zaniechanie wykluczenia wykonawcy",
+  9: "Decyzja o unieważnieniu postępowania",
+  10: "Zaniechanie unieważnienia postępowania",
+  11: "Opis przedmiotu zamówienia (OPZ)",
+  12: "Projektowane postanowienia umowy",
+};
+
+const FRIENDLY_LABELS: Record<string, string> = {
+  OdwolanieKIO: "Dane odwołania (KIO)",
+  Odwolujacy: "Odwołujący",
+  Zamawiajacy: "Zamawiający",
+  ZamowieniePubliczne: "Zamówienie publiczne",
+  przelew_bankowy: "Potwierdzenie przelewu",
+  mocodawca: "Mocodawca",
+  pelnomocnicy: "Pełnomocnicy",
+  pelnomocnik: "Pełnomocnicy",
+  podpisujacy: "Podpisujący",
+  data: "Data pisma (YYYY-MM-DD)",
+  czynnosc_dzien: "Data zaskarżonej czynności (YYYY-MM-DD)",
+  czynnosc_powod_id: "Powód odwołania (1–12)",
+  czynnosc_opis: "Opis zaskarżonej czynności",
+  miejscowosc: "Miejscowość",
+  nazwa: "Nazwa podmiotu / kancelarii",
+  imie_nazwisko: "Imię i nazwisko",
+  krs: "Numer KRS",
+  nip: "Numer NIP",
+  regon: "Numer REGON",
+  pesel: "Numer PESEL",
+  mail: "Adres e-mail",
+  typ: "Typ podmiotu",
+  "przez-pelnomocnika": "Działa przez pełnomocnika",
+  prowadzacy_postepowanie: "Prowadzący postępowanie",
+  numer_bzp: "Numer BZP",
+  numer_ted: "Numer TED",
+  numer_postepowania: "Numer postępowania",
+  tytul: "Tytuł",
+  data_operacji: "Data operacji (YYYY-MM-DD)",
+  kwota: "Kwota (PLN)",
+  z_rachunku: "Z rachunku (IBAN / NRB)",
+  na_rachunek: "Na rachunek (IBAN / NRB)",
+  numer_transakcji: "Numer transakcji",
+};
+
+function friendlyLabel(key: string): string {
+  return FRIENDLY_LABELS[key] ?? key.replace(/[_-]+/g, " ");
+}
+
+function emptyFromTemplate(sample: unknown): unknown {
+  if (Array.isArray(sample)) return [];
+  if (sample && typeof sample === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(sample as Record<string, unknown>)) {
+      out[k] = emptyFromTemplate(v);
+    }
+    return out;
+  }
+  return null;
 }
 
 const STATUS_LABEL: Record<ItemStatus, string> = {
@@ -286,8 +354,300 @@ function QuotesWithPdfView({
   );
 }
 
-function ResultView({ item }: { item: QueueItem }) {
-  const [tab, setTab] = useState<"quotes" | "json" | "meta">("quotes");
+function JsonFormNode({
+  keyName,
+  value,
+  onChange,
+}: {
+  keyName: string;
+  value: unknown;
+  onChange: (next: unknown) => void;
+}) {
+  if (Array.isArray(value)) {
+    const template = value[0] ? emptyFromTemplate(value[0]) : { imie_nazwisko: null, nazwa: null, mail: null };
+    return (
+      <div className="editor-section">
+        <div className="editor-section-head">
+          <div>
+            <strong>{friendlyLabel(keyName)}</strong>
+            <span className="editor-key-tag">{keyName}</span>
+          </div>
+          <button
+            type="button"
+            className="btn btn-sm"
+            onClick={() => onChange([...value, structuredClone(template)])}
+          >
+            + Dodaj pozycję
+          </button>
+        </div>
+        {value.length === 0 ? (
+          <div className="editor-empty">Brak wpisów — kliknij „+ Dodaj pozycję”, jeśli chcesz dodać.</div>
+        ) : (
+          <div className="editor-array-items">
+            {value.map((entry, idx) => (
+              <div key={idx} className="editor-card">
+                <div className="editor-card-head">
+                  <span>#{idx + 1}</span>
+                  <button
+                    type="button"
+                    className="link editor-remove"
+                    onClick={() => onChange(value.filter((_, i) => i !== idx))}
+                  >
+                    Usuń
+                  </button>
+                </div>
+                {entry && typeof entry === "object" && !Array.isArray(entry) ? (
+                  <div className="editor-fields">
+                    {Object.entries(entry as Record<string, unknown>).map(([childKey, childVal]) => (
+                      <JsonFormNode
+                        key={childKey}
+                        keyName={childKey}
+                        value={childVal}
+                        onChange={(nextChild) => {
+                          const updated = [...value];
+                          updated[idx] = { ...(entry as Record<string, unknown>), [childKey]: nextChild };
+                          onChange(updated);
+                        }}
+                      />
+                    ))}
+                  </div>
+                ) : (
+                  <input
+                    className="editor-input"
+                    value={entry == null ? "" : String(entry)}
+                    placeholder="Brak (null)"
+                    onChange={(e) => {
+                      const updated = [...value];
+                      updated[idx] = e.target.value.trim() === "" ? null : e.target.value;
+                      onChange(updated);
+                    }}
+                  />
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  if (value && typeof value === "object") {
+    const obj = value as Record<string, unknown>;
+    return (
+      <div className="editor-section">
+        <div className="editor-section-head">
+          <div>
+            <strong>{friendlyLabel(keyName)}</strong>
+            <span className="editor-key-tag">{keyName}</span>
+          </div>
+        </div>
+        <div className="editor-fields">
+          {Object.entries(obj).map(([childKey, childVal]) => (
+            <JsonFormNode
+              key={childKey}
+              keyName={childKey}
+              value={childVal}
+              onChange={(nextChild) => {
+                const nextObj: Record<string, unknown> = { ...obj, [childKey]: nextChild };
+                if (childKey === "czynnosc_powod_id" && typeof nextChild === "number" && "czynnosc_opis" in obj) {
+                  nextObj.czynnosc_opis = CZYNNOSC_OPIS_BY_ID[nextChild] ?? obj.czynnosc_opis;
+                }
+                onChange(nextObj);
+              }}
+            />
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  if (keyName === "czynnosc_powod_id") {
+    const numVal = typeof value === "number" ? value : Number(value) || 1;
+    return (
+      <label className="editor-row">
+        <span className="editor-label">
+          <span>{friendlyLabel(keyName)}</span>
+          <span className="editor-key-tag">{keyName}</span>
+        </span>
+        <select
+          className="editor-input"
+          value={numVal}
+          onChange={(e) => onChange(Number(e.target.value))}
+        >
+          {Object.entries(CZYNNOSC_OPIS_BY_ID).map(([id, desc]) => (
+            <option key={id} value={id}>
+              {id} — {desc}
+            </option>
+          ))}
+        </select>
+      </label>
+    );
+  }
+
+  if (keyName === "przez-pelnomocnika") {
+    const boolVal = value === 1 || value === true ? 1 : 0;
+    return (
+      <label className="editor-row">
+        <span className="editor-label">
+          <span>{friendlyLabel(keyName)}</span>
+          <span className="editor-key-tag">{keyName}</span>
+        </span>
+        <select
+          className="editor-input"
+          value={boolVal}
+          onChange={(e) => onChange(Number(e.target.value))}
+        >
+          <option value={1}>Tak (1)</option>
+          <option value={0}>Nie (0)</option>
+        </select>
+      </label>
+    );
+  }
+
+  if (keyName === "kwota") {
+    const displayVal = typeof value === "number" ? value.toFixed(2) : value == null ? "" : String(value);
+    return (
+      <label className="editor-row">
+        <span className="editor-label">
+          <span>{friendlyLabel(keyName)}</span>
+          <span className="editor-key-tag">{keyName}</span>
+        </span>
+        <input
+          className="editor-input"
+          type="number"
+          step="0.01"
+          value={displayVal}
+          placeholder="0.00"
+          onChange={(e) => {
+            const raw = e.target.value.replace(",", ".").trim();
+            if (!raw) {
+              onChange(null);
+              return;
+            }
+            const parsed = Number(raw);
+            if (!Number.isNaN(parsed)) {
+              onChange(Math.round(parsed * 100) / 100);
+            }
+          }}
+        />
+      </label>
+    );
+  }
+
+  return (
+    <label className="editor-row">
+      <span className="editor-label">
+        <span>{friendlyLabel(keyName)}</span>
+        <span className="editor-key-tag">{keyName}</span>
+      </span>
+      <input
+        className="editor-input"
+        type="text"
+        value={value == null ? "" : String(value)}
+        placeholder="Brak (null)"
+        onChange={(e) => onChange(e.target.value === "" ? null : e.target.value)}
+      />
+    </label>
+  );
+}
+
+function FriendlyJsonEditor({
+  data,
+  originalData,
+  onChange,
+  onReset,
+}: {
+  data: Record<string, unknown>;
+  originalData: Record<string, unknown>;
+  onChange: (next: Record<string, unknown>) => void;
+  onReset: () => void;
+}) {
+  const [rawMode, setRawMode] = useState(false);
+  const [rawText, setRawText] = useState(() => formatUzpJson(data));
+  const [rawError, setRawError] = useState<string | null>(null);
+  const isModified = formatUzpJson(data) !== formatUzpJson(originalData);
+
+  useEffect(() => {
+    if (!rawMode) {
+      setRawText(formatUzpJson(data));
+      setRawError(null);
+    }
+  }, [data, rawMode]);
+
+  const handleRawChange = (text: string) => {
+    setRawText(text);
+    try {
+      const parsed = JSON.parse(text);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        setRawError("Główny JSON musi być obiektem { ... }.");
+        return;
+      }
+      setRawError(null);
+      onChange(parsed as Record<string, unknown>);
+    } catch (err) {
+      setRawError(`Błąd składni JSON: ${(err as Error).message}`);
+    }
+  };
+
+  return (
+    <div className="editor-shell">
+      <div className="editor-banner">
+        <div className="editor-banner-left">
+          <span className={`badge ${isModified ? "badge-warn" : "badge-ok"}`}>
+            {isModified ? "Zmodyfikowano ręcznie" : "Oryginał z AI"}
+          </span>
+          <span className="editor-hint">
+            Popraw dowolne pole poniżej — przyciski „Kopiuj JSON” i „Pobierz JSON” zapiszą poprawioną wersję.
+          </span>
+        </div>
+        <div className="editor-banner-actions">
+          {isModified && (
+            <button type="button" className="btn btn-sm" onClick={onReset}>
+              Przywróć oryginał
+            </button>
+          )}
+          <button type="button" className="btn btn-sm" onClick={() => setRawMode((v) => !v)}>
+            {rawMode ? "Widok formularza" : "Zaawansowane: surowy JSON"}
+          </button>
+        </div>
+      </div>
+
+      {rawMode ? (
+        <div className="editor-raw-wrap">
+          {rawError && <div className="alert alert-error">{rawError}</div>}
+          <textarea
+            className="editor-raw"
+            value={rawText}
+            onChange={(e) => handleRawChange(e.target.value)}
+            spellCheck={false}
+          />
+        </div>
+      ) : Object.keys(data).length === 0 ? (
+        <div className="empty">Brak pól do edycji (dokument sklasyfikowany jako spoza zakresu).</div>
+      ) : (
+        <div className="editor-root">
+          {Object.entries(data).map(([topKey, topVal]) => (
+            <JsonFormNode
+              key={topKey}
+              keyName={topKey}
+              value={topVal}
+              onChange={(nextVal) => onChange({ ...data, [topKey]: nextVal })}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ResultView({
+  item,
+  onUpdateData,
+}: {
+  item: QueueItem;
+  onUpdateData: (nextData: Record<string, unknown>) => void;
+}) {
+  const [tab, setTab] = useState<"quotes" | "edit" | "json" | "meta">("quotes");
   const [copied, setCopied] = useState(false);
 
   if (item.status === "queued") return <div className="empty">Plik czeka w kolejce.</div>;
@@ -301,6 +661,7 @@ function ResultView({ item }: { item: QueueItem }) {
   if (item.status === "error") return <div className="alert alert-error">{item.error}</div>;
 
   const { data, meta } = item.result!;
+  const originalData = item.originalData ?? data;
   const json = formatUzpJson(data);
   const isNegative = Object.keys(data).length === 0;
   const evidence = meta.evidence ?? [];
@@ -359,6 +720,9 @@ function ResultView({ item }: { item: QueueItem }) {
           <button className={tab === "quotes" ? "tab active" : "tab"} onClick={() => setTab("quotes")}>
             Cytaty i Eksplorator PDF ({evidence.length})
           </button>
+          <button className={tab === "edit" ? "tab active" : "tab"} onClick={() => setTab("edit")}>
+            Edytuj pola
+          </button>
           <button className={tab === "json" ? "tab active" : "tab"} onClick={() => setTab("json")}>JSON UZP</button>
           <button className={tab === "meta" ? "tab active" : "tab"} onClick={() => setTab("meta")}>Metadane</button>
         </div>
@@ -369,6 +733,13 @@ function ResultView({ item }: { item: QueueItem }) {
       </div>
       {tab === "quotes" ? (
         <QuotesWithPdfView evidence={evidence} pages={pages} pageImages={pageImages} />
+      ) : tab === "edit" ? (
+        <FriendlyJsonEditor
+          data={data}
+          originalData={originalData}
+          onChange={onUpdateData}
+          onReset={() => onUpdateData(structuredClone(originalData))}
+        />
       ) : (
         <pre className="code">{tab === "json" ? json : JSON.stringify(meta, null, 2)}</pre>
       )}
@@ -403,7 +774,7 @@ export default function App() {
       activeIds.current.add(next.id);
       update(next.id, { status: "processing" });
       extractDocument(next.file)
-        .then((result) => update(next.id, { status: "done", result }))
+        .then((result) => update(next.id, { status: "done", result, originalData: structuredClone(result.data) }))
         .catch((err: Error) => update(next.id, { status: "error", error: err.message }))
         .finally(() => {
           activeIds.current.delete(next.id);
@@ -508,7 +879,14 @@ export default function App() {
           {selected ? (
             <>
               <h2 className="content-title">{selected.file.name}</h2>
-              <ResultView key={selected.id} item={selected} />
+              <ResultView
+                key={selected.id}
+                item={selected}
+                onUpdateData={(nextData) => {
+                  if (!selected.result) return;
+                  update(selected.id, { result: { ...selected.result, data: nextData } });
+                }}
+              />
             </>
           ) : (
             <div className="empty big">
