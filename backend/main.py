@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from backend.config import settings
 from backend.core.models import ExtractionResult
 from backend.services.classifier import classify_and_segment, classify_document
-from backend.services.extractor import LLMClientError, extract_document, extract_structured_data
+from backend.services.extractor import LLMClientError, extract_document
 from backend.services.parser import parse_pdf, render_pdf_explorer_data
 
 app = FastAPI(title=settings.app_name, version="0.1.0")
@@ -33,15 +33,24 @@ def health_check() -> dict[str, str]:
 
 @app.post("/api/extract", response_model=ExtractionResult)
 async def extract_case(file: UploadFile = File(...)) -> ExtractionResult:
-    """Accept a PDF file and return extracted canonical JSON (stub pipeline)."""
-    _ = await file.read()
-    # TODO: Replace placeholder text with extract_text_from_pdf(_)
-    segments = classify_and_segment("")
-    data = await extract_structured_data(segments)
+    """Accept a PDF file and return extracted canonical UZP JSON."""
+    content = await file.read()
+    try:
+        parsed = await asyncio.to_thread(parse_pdf, content)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Nie udało się odczytać PDF: {exc}") from exc
+
+    doc_type, _ = await asyncio.to_thread(classify_document, parsed.text)
+    try:
+        outcome = await extract_document(doc_type, parsed.text)
+    except LLMClientError as exc:
+        raise HTTPException(status_code=502, detail=f"Błąd API LLM: {exc}") from exc
+
+    segments = classify_and_segment(parsed.text)
     return ExtractionResult(
         filename=file.filename or "unknown.pdf",
         documents=segments,
-        data=data,
+        data=outcome.data,
     )
 
 

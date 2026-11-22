@@ -43,3 +43,18 @@ def test_classifier_rejects_negative_notices_and_weak_long_docs() -> None:
     assert notice == DocumentType.INNY
     assert ruling == DocumentType.INNY
     assert weak_long == DocumentType.INNY
+
+
+def test_extract_document_endpoint_rejects_negative_pdf() -> None:
+    from pathlib import Path
+
+    sample = Path("dane/negatywne/16_komisja_ds._regulacji_wynagrodzeń.pdf")
+    response = client.post(
+        "/api/extract/document",
+        files={"file": (sample.name, sample.read_bytes(), "application/pdf")},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["data"] == {}
+    assert body["meta"]["doc_type"] == "inny"
+    assert len(body["meta"]["page_images"]) >= 1
