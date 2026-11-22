@@ -36,10 +36,15 @@ Projekt oparty na komponentach Open Source oraz europejskim API LLM (np. Mistral
 │   └── przyklad_01/...              # 60 spraw treningowych z referencyjnymi plikami JSON
 ├── scripts/
 │   ├── download_hacknation_data.py  # Pobieranie danych źródłowych
+│   ├── fetch_uzp_negatives.py       # Pobieranie prawdziwych orzeczeń KIO z UZP jako negatywów (`inny`)
 │   ├── classify_documents.py        # Trenowanie i uruchamianie klasyfikatora
+│   ├── process_batch.py             # Przetwarzanie wsadowe katalogu input/ -> output/
 │   ├── test_pipeline.py             # Test pojedynczego pliku PDF (CLI)
 │   └── benchmark.py                 # Benchmark przepustowości (batch równoległy)
 ├── tests/                           # Testy jednostkowe i integracyjne (pytest)
+├── Dockerfile                       # Obraz CPU-only (Python + Tesseract pol + zbudowany frontend React)
+├── docker-compose.yml               # Usługi `app` (GUI + API) oraz `processor` (wsadowe CLI)
+├── RUN.md                           # Instrukcja bezobsługowego uruchomienia na serwerze (/opt/solution)
 ├── .env.example                     # Przykładowa konfiguracja zmiennych środowiskowych
 ├── requirements.txt                 # Lista zależności Pythona (CPU-only, Open Source)
 └── pyproject.toml                   # Zależności i konfiguracja projektu
@@ -62,7 +67,20 @@ python scripts/download_hacknation_data.py --branch main --target dane
 
 Skrypt pobiera cały katalog `dane/`, w tym podkatalog `dane/skany/`.
 
-## Szybki start (jak uruchomić aplikację lokalnie)
+## Uruchomienie produkcyjne (Docker — GUI + batch CLI)
+
+Najprostszy sposób uruchomienia dla użytkownika końcowego oraz automatycznej oceny wsadowej opisany jest w [RUN.md](RUN.md):
+
+```bash
+cp .env.example .env
+# Uzupełnij LLM_API_KEY, LLM_BASE_URL i LLM_MODEL w .env
+
+docker compose build
+docker compose up -d app          # Aplikacja webowa (GUI + API) na portach 80 i 8000
+docker compose run --rm processor # Bezobsługowe przetwarzanie input/ -> output/
+```
+
+## Szybki start lokalny (tryb developerski)
 
 ### 1. Środowisko Pythona i zależności
 ```bash
@@ -79,24 +97,11 @@ cp .env.example .env
 
 ### 2. Konfiguracja modelu LLM w pliku `.env`
 
-**Wariant A – lokalny model na CPU przez Ollama (np. polski Bielik-1.5B):**
-```bash
-ollama pull hf.co/speakleash/Bielik-1.5B-v3.0-Instruct-GGUF:Q8_0
-```
-W pliku `.env` ustaw:
-```env
-LLM_API_KEY=ollama
-LLM_BASE_URL=http://localhost:11434/v1
-LLM_MODEL=hf.co/speakleash/Bielik-1.5B-v3.0-Instruct-GGUF:Q8_0
-LLM_TIMEOUT_SECONDS=180
-LLM_EXTRACTION_MODE=section_swarm
-```
-
-**Wariant B – zdalne europejskie API (np. Mistral AI / Scaleway):**
+Aplikacja korzysta ze zdalnego API kompatybilnego z OpenAI (np. europejskie API Mistral AI / Scaleway / OVHcloud AI Endpoints, model Open Source):
 ```env
 LLM_API_KEY=twoj_klucz_api
 LLM_BASE_URL=https://api.mistral.ai/v1
-LLM_MODEL=ministral-3b-latest
+LLM_MODEL=ministral-8b-latest
 LLM_TIMEOUT_SECONDS=30
 LLM_EXTRACTION_MODE=section_swarm
 ```
@@ -120,7 +125,8 @@ npm run dev
 Następnie otwórz w przeglądarce: **http://localhost:5173**
 - Przeciągnij jeden lub wiele plików PDF (np. z `dane/przyklad_01/odwolanie.pdf`).
 - W górnym pasku możesz przełączać **tryb dzienny/nocny** oraz liczbę dokumentów przetwarzanych **równolegle (`1 / 2 / 4 / 8`)**.
-- W zakładce **„Cytaty i Eksplorator PDF”** kliknięcie dowolnego wyekstrahowanego pola przewija stronę wbudowanego eksploratora PDF i podświetla na niej dokładny fragment źródłowy.
+- W zakładce **„Cytaty i Eksplorator PDF”** kliknięcie pola podświetla fragment w dokumencie PDF (z przybliżaniem i przesuwaniem myszką) oraz pozwala od razu poprawić wartość inline.
+- W zakładce **„Edytuj pola”** możesz wygodnie poprawić wszystkie pola w formularzu (lub w surowym JSON-ie) i pobrać wynik pojedynczo albo hurtowo jako **ZIP (`wyniki_json.zip`)**.
 
 ### 4. Uruchamianie z linii komend (CLI) i testy
 
