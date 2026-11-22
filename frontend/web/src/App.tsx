@@ -258,31 +258,136 @@ function HighlightedPageText({ text, quote }: { text: string; quote: string | nu
   );
 }
 
+function parseFieldPath(path: string): Array<string | number> {
+  const tokens: Array<string | number> = [];
+  for (const part of path.split(".")) {
+    const re = /([^[\]]+)|\[(\d+)\]/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(part)) !== null) {
+      if (m[1] !== undefined) tokens.push(m[1]);
+      else if (m[2] !== undefined) tokens.push(Number(m[2]));
+    }
+  }
+  return tokens;
+}
+
+function getValueAtPath(root: unknown, path: string): unknown {
+  let cur: unknown = root;
+  for (const key of parseFieldPath(path)) {
+    if (cur == null || typeof cur !== "object") return undefined;
+    cur = (cur as Record<string | number, unknown>)[key];
+  }
+  return cur;
+}
+
+function setValueAtPath(
+  root: Record<string, unknown>,
+  path: string,
+  nextValue: unknown,
+): Record<string, unknown> {
+  const tokens = parseFieldPath(path);
+  if (tokens.length === 0) return root;
+  const clone = structuredClone(root);
+  let cur: unknown = clone;
+  for (let i = 0; i < tokens.length - 1; i++) {
+    const k = tokens[i];
+    if (cur == null || typeof cur !== "object") return root;
+    cur = (cur as Record<string | number, unknown>)[k];
+  }
+  const last = tokens[tokens.length - 1];
+  if (cur != null && typeof cur === "object") {
+    (cur as Record<string | number, unknown>)[last] = nextValue;
+  }
+  return clone;
+}
+
 function QuotesWithPdfView({
   evidence,
   pages,
   pageImages,
+  data,
+  onUpdateData,
 }: {
   evidence: FieldEvidence[];
   pages: string[];
   pageImages: string[];
+  data: Record<string, unknown>;
+  onUpdateData: (nextData: Record<string, unknown>) => void;
 }) {
   const [selectedIdx, setSelectedIdx] = useState<number>(0);
   const [viewMode, setViewMode] = useState<"pdf" | "text">("pdf");
   const [zoom, setZoom] = useState<number>(100);
+  const [pan, setPan] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const [isDragging, setIsDragging] = useState<boolean>(false);
   const activeRectRef = useRef<HTMLDivElement | null>(null);
   const activePageRef = useRef<HTMLDivElement | null>(null);
+  const explorerRef = useRef<HTMLDivElement | null>(null);
+  const dragStateRef = useRef<{
+    x: number;
+    y: number;
+    scrollLeft: number;
+    scrollTop: number;
+    panX: number;
+    panY: number;
+    moved: boolean;
+  } | null>(null);
+  const suppressRectClickRef = useRef<boolean>(false);
 
   const activeEv: FieldEvidence | undefined = evidence[selectedIdx] ?? evidence[0];
   const activePage = activeEv?.page ?? 1;
   const fullDocumentText = (pages.length > 0 ? pages : ["(Brak warstwy tekstowej PDF)"]).join("\n\n");
 
   useEffect(() => {
+    setPan({ x: 0, y: 0 });
     const target = activeRectRef.current ?? activePageRef.current;
     if (target) {
       target.scrollIntoView({ behavior: "smooth", block: "center" });
     }
   }, [selectedIdx, viewMode, activePage]);
+
+  useEffect(() => {
+    if (!isDragging) return;
+    const handleMouseMove = (e: MouseEvent) => {
+      const el = explorerRef.current;
+      const drag = dragStateRef.current;
+      if (!el || !drag) return;
+      const dx = e.clientX - drag.x;
+      const dy = e.clientY - drag.y;
+      if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
+        drag.moved = true;
+      }
+      const canScrollX = el.scrollWidth > el.clientWidth + 1;
+      const canScrollY = el.scrollHeight > el.clientHeight + 1;
+      if (canScrollX) {
+        el.scrollLeft = drag.scrollLeft - dx;
+      }
+      if (canScrollY) {
+        el.scrollTop = drag.scrollTop - dy;
+      }
+      if (!canScrollX || !canScrollY) {
+        setPan({
+          x: canScrollX ? drag.panX : Math.max(-320, Math.min(320, drag.panX + dx)),
+          y: canScrollY ? drag.panY : Math.max(-320, Math.min(320, drag.panY + dy)),
+        });
+      }
+    };
+    const handleMouseUp = () => {
+      if (dragStateRef.current?.moved) {
+        suppressRectClickRef.current = true;
+        window.setTimeout(() => {
+          suppressRectClickRef.current = false;
+        }, 0);
+      }
+      dragStateRef.current = null;
+      setIsDragging(false);
+    };
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, [isDragging]);
 
   return (
     <div className="quotes-split">
@@ -297,6 +402,14 @@ function QuotesWithPdfView({
           <div className="evidence-list">
             {evidence.map((ev, i) => {
               const isSelected = i === selectedIdx;
+              const liveVal = getValueAtPath(data, ev.field);
+              const effectiveVal = liveVal !== undefined ? liveVal : ev.value;
+              const isEditableScalar =
+                liveVal !== undefined &&
+                (effectiveVal === null ||
+                  typeof effectiveVal === "string" ||
+                  typeof effectiveVal === "number");
+              const isKwotaField = ev.field === "kwota" || ev.field.endsWith(".kwota");
               return (
                 <div
                   key={i}
@@ -314,7 +427,65 @@ function QuotesWithPdfView({
                       {isSelected ? "Podświetlono" : "Pokaż"}
                     </span>
                   </div>
-                  <div className="evidence-value">{formatFieldValue(ev.field, ev.value)}</div>
+                  <div className="evidence-value">{formatFieldValue(ev.field, effectiveVal)}</div>
+                  {isSelected && isEditableScalar && (
+                    <div className="evidence-inline-edit" onClick={(e) => e.stopPropagation()}>
+                      {ev.field === "tytul" || ev.field.endsWith(".tytul") ? (
+                        <textarea
+                          className="editor-input editor-textarea"
+                          rows={2}
+                          value={effectiveVal == null ? "" : String(effectiveVal)}
+                          placeholder="Wpisz lub popraw wartość…"
+                          onChange={(e) =>
+                            onUpdateData(
+                              setValueAtPath(
+                                data,
+                                ev.field,
+                                e.target.value === "" ? null : e.target.value,
+                              ),
+                            )
+                          }
+                        />
+                      ) : (
+                        <input
+                          className="editor-input"
+                          type={isKwotaField ? "number" : "text"}
+                          step={isKwotaField ? "0.01" : undefined}
+                          value={
+                            isKwotaField && typeof effectiveVal === "number"
+                              ? effectiveVal.toFixed(2)
+                              : effectiveVal == null
+                                ? ""
+                                : String(effectiveVal)
+                          }
+                          placeholder="Wpisz lub popraw wartość…"
+                          onChange={(e) => {
+                            if (isKwotaField) {
+                              const raw = e.target.value.replace(",", ".").trim();
+                              if (!raw) {
+                                onUpdateData(setValueAtPath(data, ev.field, null));
+                                return;
+                              }
+                              const parsed = Number(raw);
+                              if (!Number.isNaN(parsed)) {
+                                onUpdateData(
+                                  setValueAtPath(data, ev.field, Math.round(parsed * 100) / 100),
+                                );
+                              }
+                              return;
+                            }
+                            onUpdateData(
+                              setValueAtPath(
+                                data,
+                                ev.field,
+                                e.target.value === "" ? null : e.target.value,
+                              ),
+                            );
+                          }}
+                        />
+                      )}
+                    </div>
+                  )}
                   <blockquote className="evidence-quote">
                     {ev.quote ? `„${ev.quote}”` : "Nie znaleziono bezpośredniego fragmentu w tekście."}
                   </blockquote>
@@ -343,7 +514,7 @@ function QuotesWithPdfView({
                 <button
                   type="button"
                   className="zoom-btn"
-                  onClick={() => setZoom((z) => Math.max(70, z - 15))}
+                  onClick={() => setZoom((z) => Math.max(70, z - 20))}
                   title="Pomniejsz"
                 >
                   −
@@ -352,11 +523,24 @@ function QuotesWithPdfView({
                 <button
                   type="button"
                   className="zoom-btn"
-                  onClick={() => setZoom((z) => Math.min(175, z + 15))}
+                  onClick={() => setZoom((z) => Math.min(250, z + 20))}
                   title="Powiększ"
                 >
                   +
                 </button>
+                {(zoom !== 100 || pan.x !== 0 || pan.y !== 0) && (
+                  <button
+                    type="button"
+                    className="zoom-btn zoom-reset-btn"
+                    onClick={() => {
+                      setZoom(100);
+                      setPan({ x: 0, y: 0 });
+                    }}
+                    title="Resetuj powiększenie i pozycję"
+                  >
+                    ↺
+                  </button>
+                )}
               </div>
             )}
             <div className="tabs">
@@ -386,8 +570,31 @@ function QuotesWithPdfView({
         )}
 
         {viewMode === "pdf" && pageImages.length > 0 ? (
-          <div className="pdf-explorer-scroll">
-            <div className="pdf-document-sheet" style={{ width: `${zoom}%` }}>
+          <div
+            ref={explorerRef}
+            className={`pdf-explorer-scroll ${isDragging ? "dragging" : ""}`}
+            onMouseDown={(e) => {
+              if (e.button !== 0 || !explorerRef.current) return;
+              e.preventDefault();
+              dragStateRef.current = {
+                x: e.clientX,
+                y: e.clientY,
+                scrollLeft: explorerRef.current.scrollLeft,
+                scrollTop: explorerRef.current.scrollTop,
+                panX: pan.x,
+                panY: pan.y,
+                moved: false,
+              };
+              setIsDragging(true);
+            }}
+          >
+            <div
+              className="pdf-document-sheet"
+              style={{
+                width: `${zoom}%`,
+                transform: `translate(${pan.x}px, ${pan.y}px)`,
+              }}
+            >
               {pageImages.map((imgSrc, pageIdx) => {
                 const pNum = pageIdx + 1;
                 const isTargetPage = pNum === activePage;
@@ -401,7 +608,7 @@ function QuotesWithPdfView({
                     ref={isTargetPage ? activePageRef : null}
                     className="pdf-canvas-stage"
                   >
-                    <img src={imgSrc} alt="Dokument PDF" className="pdf-page-img" />
+                    <img src={imgSrc} alt="Dokument PDF" className="pdf-page-img" draggable={false} />
                     {pageEvidences.map(({ ev, evIdx }) => {
                       const isActive = evIdx === selectedIdx;
                       return (ev.rects ?? []).map((rect, rIdx) => (
@@ -416,7 +623,10 @@ function QuotesWithPdfView({
                             height: `${rect.h}%`,
                           }}
                           title={`"${formatJsonKey(ev.field)}": ${formatFieldValue(ev.field, ev.value)}`}
-                          onClick={() => setSelectedIdx(evIdx)}
+                          onClick={() => {
+                            if (suppressRectClickRef.current) return;
+                            setSelectedIdx(evIdx);
+                          }}
                         />
                       ));
                     })}
@@ -626,13 +836,23 @@ function JsonFormNode({
         <span>{friendlyLabel(keyName)}</span>
         <span className="editor-key-tag">{keyName}</span>
       </span>
-      <input
-        className="editor-input"
-        type="text"
-        value={value == null ? "" : String(value)}
-        placeholder="Brak (null)"
-        onChange={(e) => onChange(e.target.value === "" ? null : e.target.value)}
-      />
+      {keyName === "tytul" ? (
+        <textarea
+          className="editor-input editor-textarea"
+          rows={2}
+          value={value == null ? "" : String(value)}
+          placeholder="Brak (null)"
+          onChange={(e) => onChange(e.target.value === "" ? null : e.target.value)}
+        />
+      ) : (
+        <input
+          className="editor-input"
+          type="text"
+          value={value == null ? "" : String(value)}
+          placeholder="Brak (null)"
+          onChange={(e) => onChange(e.target.value === "" ? null : e.target.value)}
+        />
+      )}
     </label>
   );
 }
@@ -824,7 +1044,13 @@ function ResultView({
         </div>
       </div>
       {tab === "quotes" ? (
-        <QuotesWithPdfView evidence={evidence} pages={pages} pageImages={pageImages} />
+        <QuotesWithPdfView
+          evidence={evidence}
+          pages={pages}
+          pageImages={pageImages}
+          data={data}
+          onUpdateData={onUpdateData}
+        />
       ) : tab === "edit" ? (
         <FriendlyJsonEditor
           data={data}

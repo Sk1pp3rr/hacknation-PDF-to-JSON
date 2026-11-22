@@ -40,19 +40,3 @@ services:
         "--output",
         "/app/output",
       ]
-
-  ollama:
-    image: ollama/ollama:latest
-    container_name: hacknation-ollama
-    profiles: ["local-llm"]
-    restart: unless-stopped
-    ports:
-      - "11434:11434"
-    environment:
-      - OLLAMA_NUM_PARALLEL=2
-      - OLLAMA_KEEP_ALIVE=30m
-    volumes:
-      - ollama_data:/root/.ollama
-
-volumes:
-  ollama_data:
